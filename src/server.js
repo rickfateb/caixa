@@ -1,11 +1,12 @@
 import express from 'express';
 import pg from 'pg';
 import { OAuth2Client } from 'google-auth-library';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { pickPromotion, quotePrice } from './pricing.js';
+import { createRegisterToken, readRegisterToken } from './register-token.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { DATABASE_URL, GOOGLE_CLIENT_ID, ADMIN_EMAIL } = process.env;
@@ -231,7 +232,7 @@ app.get('/api/admin/registers',requireGoogle,async(_req,res,next)=>{
 app.post('/api/admin/registers',requireGoogle,admin,async(req,res,next)=>{
   try{
     if(!positiveId(req.body.unitId)||!text(req.body.name,80)) throw failure('INVALID_REGISTER');
-    const token='fcx_'+randomBytes(32).toString('base64url');
+    const token=createRegisterToken();
     const {rows}=await pool.query(`INSERT INTO registers(unit_id,name,external_number,token_hash)
       VALUES($1,$2,$3,$4) RETURNING id,unit_id,name,external_number,active`,
       [req.body.unitId,text(req.body.name,80),text(req.body.externalNumber,80)||null,sha(token)]);
@@ -259,7 +260,7 @@ app.get('/api/admin/sales',requireGoogle,async(req,res,next)=>{
 
 async function requireRegister(req,_res,next){
   try {
-    const token=/^Bearer (fcx_[A-Za-z0-9_-]+)$/.exec(req.get('authorization')||'')?.[1];
+    const token=readRegisterToken(req.get('authorization'));
     if(!token) throw failure('REGISTER_TOKEN_REQUIRED',401);
     const hash=sha(token);
     const {rows}=await pool.query(`SELECT r.id,r.unit_id,r.name FROM registers r JOIN units u ON u.id=r.unit_id

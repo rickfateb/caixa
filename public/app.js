@@ -97,7 +97,24 @@ document.addEventListener('click',async e=>{const button=e.target.closest('butto
     if(button.dataset.editPromotion)promotionEditor(promotions.find(p=>String(p.id)===button.dataset.editPromotion));
     if(button.id==='save-price'){const cents=asCents($('price-value').value);if(!Number.isSafeInteger(cents)||cents<0)throw Error('Preço inválido.');await send(`/api/admin/unit-products/${$('price-unit').value}/${$('price-product').value}`,'PUT',{salePriceCents:cents});flash('Preço salvo.');await loadPrices();}
     if(button.dataset.removePrice){if(confirm('Remover o preço desta unidade? O caixa passará a usar o preço padrão, quando cadastrado.')){await api(`/api/admin/unit-products/${$('price-unit').value}/${button.dataset.removePrice}`,{method:'DELETE'});flash('Preço específico removido.');await loadPrices();}}
-    if(button.id==='create-register'){const data=await send('/api/admin/registers','POST',{unitId:$('register-unit').value,name:$('register-name').value,externalNumber:$('register-number').value});$('token-result').hidden=false;$('token-result').innerHTML=`Guarde agora o token do caixa <strong>${safe(data.name)}</strong>. Ele só será exibido desta vez.<code>${safe(data.token)}</code>`;await loadRegisters();}
+    if(button.id==='create-register'){
+      const data=await send('/api/admin/registers','POST',{unitId:$('register-unit').value,name:$('register-name').value,externalNumber:$('register-number').value});
+      const result=$('token-result');
+      result.innerHTML=`<strong>Chave do caixa ${safe(data.name)}</strong><p>Guarde esta chave agora. Após sair desta página, ela não poderá ser consultada novamente.</p><div class="token-key"><input id="register-token" type="password" readonly autocomplete="off" spellcheck="false" aria-label="Chave do caixa" value="${safe(data.token)}"><button type="button" class="secondary" data-token-action="toggle" aria-controls="register-token" aria-pressed="false">Mostrar</button><button type="button" data-token-action="copy">Copiar</button></div>`;
+      result.hidden=false;
+      await loadRegisters();
+    }
+    if(button.dataset.tokenAction==='toggle'){
+      const input=$('register-token');
+      const visible=input.type==='password';
+      input.type=visible?'text':'password';
+      button.textContent=visible?'Ocultar':'Mostrar';
+      button.setAttribute('aria-pressed',String(visible));
+    }
+    if(button.dataset.tokenAction==='copy'){
+      await navigator.clipboard.writeText($('register-token').value);
+      flash('Chave copiada.');
+    }
     if(button.dataset.toggleRegister){await send(`/api/admin/registers/${button.dataset.toggleRegister}`,'PATCH',{active:button.dataset.active!=='true'});await loadRegisters();}
     if(button.id==='save-settings'){let settings;try{settings=JSON.parse($('settings-value').value);}catch{throw Error('JSON inválido.');}await send(`/api/admin/settings/${$('settings-unit').value}`,'PUT',{settings});flash('Configurações salvas.');}
     if(button.id==='refresh-sales')await loadSales();
