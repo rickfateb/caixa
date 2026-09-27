@@ -1,0 +1,104 @@
+# Facinho Caixa · Portal de dados
+
+Projeto independente do Cobile, destinado a alimentar o aplicativo de frente de caixa desenvolvido no Cursor. Implantação prevista em um **projeto Railway separado**, com PostgreSQL próprio. Não acessa os subdomínios nem o banco do Cobile em tempo de execução.
+
+## Primeira versão
+
+- Portal web em português com login Google e permissões de Administrador/Supervisor.
+- Unidades, produtos, códigos de barras, preços por unidade, configurações e caixas.
+- Cada caixa recebe um token exclusivo, apresentado apenas na criação, que identifica a unidade automaticamente.
+- Três APIs para o app: `GET /api/v1/catalog`, `GET /api/v1/config` e `POST /api/v1/sales`.
+- Vendas em transação, com itens e pagamentos e idempotência por `(caixa, clientSaleId)`.
+
+## Como executar
+
+Node.js 20+, PostgreSQL. Crie um `.env` local a partir de `.env.example` e configure as variáveis no serviço Railway (o Node não lê `.env` automaticamente):
+
+| Variável | Uso |
+| --- | --- |
+| `DATABASE_URL` | URL do PostgreSQL exclusivo deste projeto. |
+| `GOOGLE_CLIENT_ID` | ID do cliente OAuth do login Google. Adicione a origem HTTPS deste portal às origens JavaScript autorizadas no Google Cloud. |
+| `ADMIN_EMAIL` | E-mail Google do primeiro administrador. Precisa corresponder ao e-mail autenticado. |
+| `PORT` | Porta HTTP, definida automaticamente pela Railway. |
+
+```bash
+npm install
+npm start
+```
+
+O servidor cria as tabelas de `sql/001_initial.sql` na inicialização e insere o primeiro administrador caso ainda não exista. Só configure um e-mail real autorizado; o cadastro é exclusivo deste projeto. Um cadastro antigo não é copiado automaticamente.
+
+## Contrato para o Cursor
+
+Autentique o app com o token do caixa no cabeçalho `Authorization: Bearer fcx_...`. Guarde o token em armazenamento seguro da maquininha. **Não coloque o token no repositório nem inclua dados completos de cartão em `metadata` ou `raw_payload`.** O portal usa centavos inteiros para valores, quantidade decimal de até três casas e datas ISO 8601.
+
+### 1. Catálogo
+
+`GET /api/v1/catalog` retorna um snapshot completo dos produtos ativos da unidade desse caixa, com IDs, códigos, EANs, descrição, categoria, subcategoria, marca, unidade de medida, NCM e preço de venda. O app pode armazenar o snapshot localmente e consultar de novo quando necessário. Produtos de outras unidades não são retornados.
+
+```json
+{
+  "unitId": "1", "registerId": "2", "generatedAt": "2026-09-27T17:00:00.000Z",
+  "products": [{ "id": "10", "external_id": "123", "code": "ABC", "description": "Água 500 ml",
+    "category": "Bebidas", "barcodes": ["7890000000000"], "sale_price_cents": "450" }]
+}
+```
+
+IDs e `bigint` podem chegar como **strings** no JSON. O app deve tratá-los como identificadores, sem converter para ponto flutuante.
+
+### 2. Configurações
+
+`GET /api/v1/config` retorna a unidade e o caixa identificados pelo token e as configurações JSON cadastradas para aquela unidade.
+
+```json
+{"unit":{"id":"1","name":"Facinho Parque Atlantic","acronym":"PA","settings":{}},"register":{"id":"2","name":"Caixa 01"}}
+```
+
+O formato interno de `settings` será fechado junto com as regras concretas da maquininha; a primeira versão aceita um objeto JSON sem impor campos fiscais ou de pagamento ainda não definidos.
+
+### 3. Envio das vendas
+
+`POST /api/v1/sales` recebe uma venda por solicitação. `clientSaleId` deve ser único e persistente **por caixa**, criado pelo app antes do envio. Se houver falha de conexão, reenviar exatamente o mesmo JSON com o mesmo ID; a resposta traz `duplicate: true` sem duplicar a venda. Se o mesmo ID vier com dados diferentes, retorna HTTP 409.
+
+```json
+{
+  "clientSaleId": "uuid-gerado-pelo-caixa",
+  "occurredAt": "2026-09-27T16:55:00.000Z",
+  "status": "APPROVED",
+  "totalCents": 900,
+  "items": [
+    {"productId":"10","barcode":"7890000000000","description":"Água 500 ml",
+     "quantity":2,"unitPriceCents":450,"totalCents":900}
+  ],
+  "payments": [
+    {"method":"CREDIT","amountCents":900,"providerReference":"referencia-nao-sensivel"}
+  ]
+}
+```
+
+Para `APPROVED`, soma dos itens, soma dos pagamentos e `totalCents` precisam coincidir. Quantidades multiplicadas por preço são arredondadas para centavos. O servidor ignora qualquer `unitId` ou `registerId` enviado no corpo e usa exclusivamente o token do caixa. Uma venda com `status: "CANCELLED"` é aceita como registro separado (pagamentos totalizando zero); a regra de estorno de uma venda aprovada ainda precisa ser definida antes de ser usada em produção.
+
+Respostas: HTTP 201 `{ "id": "...", "duplicate": false }`, HTTP 200 em repetição idêntica; HTTP 401/403 para token inválido, 400 para dados inválidos, 409 para ID conflitante. Nunca inferir que uma venda foi gravada depois de timeout: reenviar com o mesmo ID.
+
+## Correspondência com cadastros existentes
+
+O esquema foi desenhado tomando como referência o cadastro Saurus e as tabelas compartilhadas do Cobile, **sem conectar os bancos**. Na importação inicial, confirme a origem e integridade dos dados antes de enviar ao novo banco.
+
+| Campo atual | Coluna no portal | Observação |
+| --- | --- | --- |
+| `pro_idProduto` | `products.external_id` | Identificador externo preservado. |
+| `pro_status`, `pro_tpItem` | `products.status`, `item_type` | Estado e tipo. |
+| `pro_codProduto`, `pro_descProduto`, `pro_descRegProduto` | `code`, `description`, `registered_description` | Código e descrições. |
+| `pro_codNcm` | `ncm` | Código fiscal, sem inventar tributação. |
+| `pro_descCategoria`, `pro_descSubcategoria`, `pro_descMarca`, `pro_descMedida` | `category`, `subcategory`, `brand`, `unit_of_measure` | Verificar categorias ausentes antes da carga. |
+| `pro_vCompra`, `pro_vCusto` | `purchase_cost_cents`, `cost_cents` | Converter de reais para centavos. |
+| `pro_vProd` ou tabela de preços vigente | `unit_products.sale_price_cents` | Validar o preço de cada unidade antes de publicar. |
+| `loj_idLoja`, `loj_fant`, `loj_doc` | `units.external_id`, `name`, `document` | Associar a sigla e o número do caixa. |
+| Código de barras/EAN | `product_barcodes.barcode` | Vários códigos podem apontar para o mesmo produto. |
+| `sys_dUpdate` | `products.source_updated_at` | Guardar atualização da origem em eventual importador. |
+
+`qSaldo` não foi convertido automaticamente em estoque por unidade: é preciso reconciliar a origem desse saldo. Histórico antigo de vendas, usuários e caixas também **não foi copiado**. Uma rotina de migração poderá ler uma exportação revisada do Cobile/Saurus e gravar aqui sem criar dependência entre projetos.
+
+## Segurança e limites desta etapa
+
+O repositório foi criado como **público** no GitHub. Nunca suba `.env`, tokens de caixas, credenciais PostgreSQL ou dados de vendas reais. Token do caixa fica como hash SHA-256 no banco; o valor original aparece só na criação. Login Google do portal consulta `users` local; alterações administrativas são auditadas. Sem integração fiscal, emissão de nota, captura de cartão, baixa de estoque ou reconciliação automática com o Cobile nesta primeira versão.
