@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { pickPromotion, quotePrice } from './pricing.js';
 import { createRegisterToken, readRegisterToken } from './register-token.js';
+import { normalizeSaurusSale } from './saurus-import.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { DATABASE_URL, GOOGLE_CLIENT_ID, ADMIN_EMAIL } = process.env;
@@ -26,6 +27,7 @@ async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/001_initial.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/002_promotions.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/003_units.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/004_sales_saurus.sql'), 'utf8'));
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);
 }
@@ -260,13 +262,135 @@ app.patch('/api/admin/registers/:id',requireGoogle,admin,async(req,res,next)=>{
 });
 app.get('/api/admin/sales',requireGoogle,async(req,res,next)=>{
   try {
-    const unitId=req.query.unitId;
+    const unitId=req.query.unitId||null;
     if(unitId && !positiveId(unitId)) throw failure('INVALID_ID');
-    const {rows}=await pool.query(`SELECT s.id,s.client_sale_id,s.unit_id,u.name AS unit_name,r.name AS register_name,
-      s.occurred_at,s.received_at,s.status,s.total_cents FROM sales s JOIN units u ON u.id=s.unit_id
-      JOIN registers r ON r.id=s.register_id WHERE $1::bigint IS NULL OR s.unit_id=$1
-      ORDER BY s.received_at DESC LIMIT 100`,[unitId||null]);res.json(rows);
+    const source=text(req.query.source,20);
+    if(source&&!['POS','SAURUS'].includes(source)) throw failure('INVALID_SOURCE');
+    const search=text(req.query.q,100);
+    const offset=Math.min(Math.max(Number(req.query.offset)||0,0),100000);
+    const {rows}=await pool.query(`SELECT s.id,s.source,s.external_sale_id,s.client_sale_id,s.external_store_id,
+      s.external_register_number,s.source_status,s.unit_id,u.name AS unit_name,r.name AS register_name,
+      s.occurred_at,s.received_at,s.status,s.total_cents,
+      (SELECT count(*)::int FROM sale_items i WHERE i.sale_id=s.id) AS item_count
+      FROM sales s LEFT JOIN units u ON u.id=s.unit_id LEFT JOIN registers r ON r.id=s.register_id
+      WHERE ($1::bigint IS NULL OR s.unit_id=$1) AND ($2::text='' OR s.source=$2)
+        AND ($3::text='' OR s.external_sale_id ILIKE '%'||$3||'%' OR s.client_sale_id ILIKE '%'||$3||'%'
+          OR s.external_register_number=$3)
+      ORDER BY s.occurred_at DESC,s.id DESC LIMIT 100 OFFSET $4`,[unitId,source,search,offset]);res.json(rows);
   }catch(e){next(e);}
+});
+app.get('/api/admin/sales/:id',requireGoogle,async(req,res,next)=>{
+  try {
+    if(!positiveId(req.params.id)) throw failure('INVALID_ID');
+    const sale=(await pool.query(`SELECT s.id,s.source,s.external_sale_id,s.client_sale_id,s.external_store_id,
+      s.external_register_number,s.source_status,s.unit_id,u.name AS unit_name,r.name AS register_name,
+      s.occurred_at,s.received_at,s.status,s.total_cents
+      FROM sales s LEFT JOIN units u ON u.id=s.unit_id LEFT JOIN registers r ON r.id=s.register_id
+      WHERE s.id=$1`,[req.params.id])).rows[0];
+    if(!sale) throw failure('NOT_FOUND',404);
+    const [items,payments,installments,tef]=await Promise.all([
+      pool.query(`SELECT line_number,external_item_id,external_product_id,product_id,product_code,barcode,
+        description,unit_of_measure,quantity,unit_price_cents,source_unit_price,total_cents,discount_cents,promotion_id
+        FROM sale_items WHERE sale_id=$1 ORDER BY line_number`,[req.params.id]),
+      pool.query(`SELECT line_number,external_payment_id,method,amount_cents,provider_reference
+        FROM sale_payments WHERE sale_id=$1 ORDER BY line_number`,[req.params.id]),
+      pool.query(`SELECT line_number,external_id,external_payment_id,due_date,amount_cents,paid_cents,status
+        FROM sale_installments WHERE sale_id=$1 ORDER BY line_number`,[req.params.id]),
+      pool.query(`SELECT line_number,external_id,external_payment_id,transaction_id,authorization_code,
+        nsu,control_code,status,transaction_type,occurred_at FROM sale_tef WHERE sale_id=$1 ORDER BY line_number`,[req.params.id])
+    ]);
+    res.json({...sale,items:items.rows,payments:payments.rows,installments:installments.rows,tef:tef.rows});
+  }catch(e){next(e);}
+});
+app.get('/api/admin/saurus-mappings',requireGoogle,async(_req,res,next)=>{
+  try {res.json((await pool.query(`SELECT m.external_store_id,m.external_register_number,m.unit_id,m.register_id,
+    u.name AS unit_name,r.name AS register_name,m.updated_at,
+    (SELECT count(*)::int FROM sales s WHERE s.source='SAURUS' AND s.external_store_id=m.external_store_id
+      AND s.external_register_number=m.external_register_number) AS sale_count
+    FROM saurus_register_mappings m LEFT JOIN units u ON u.id=m.unit_id
+    LEFT JOIN registers r ON r.id=m.register_id ORDER BY m.external_store_id,m.external_register_number`)).rows);}
+  catch(e){next(e);}
+});
+app.put('/api/admin/saurus-mappings/:storeId/:registerNumber',requireGoogle,admin,async(req,res,next)=>{
+  let client;
+  try {
+    const storeId=text(req.params.storeId,80),number=text(req.params.registerNumber,80);
+    const unitId=req.body.unitId||null,registerId=req.body.registerId||null;
+    if(!storeId||!number||(unitId&&!positiveId(unitId))||(registerId&&!positiveId(registerId))||
+      (registerId&&!unitId)) throw failure('INVALID_MAPPING');
+    client=await pool.connect();await client.query('BEGIN');
+    if(unitId){
+      const found=await client.query('SELECT 1 FROM units WHERE id=$1',[unitId]);
+      if(!found.rows.length) throw failure('UNIT_NOT_FOUND');
+    }
+    if(registerId){
+      const found=await client.query('SELECT 1 FROM registers WHERE id=$1 AND unit_id=$2',[registerId,unitId]);
+      if(!found.rows.length) throw failure('REGISTER_NOT_IN_UNIT');
+    }
+    const {rows}=await client.query(`INSERT INTO saurus_register_mappings(external_store_id,external_register_number,unit_id,register_id)
+      VALUES($1,$2,$3,$4) ON CONFLICT(external_store_id,external_register_number)
+      DO UPDATE SET unit_id=excluded.unit_id,register_id=excluded.register_id,updated_at=now() RETURNING *`,
+      [storeId,number,unitId,registerId]);
+    await client.query(`UPDATE sales SET unit_id=$3,register_id=$4 WHERE source='SAURUS'
+      AND external_store_id=$1 AND external_register_number=$2`,[storeId,number,unitId,registerId]);
+    await audit(client,req.user.email,'MAP','saurus_register_mappings',`${storeId}/${number}`,{unitId,registerId});
+    await client.query('COMMIT');res.json(rows[0]);
+  }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}
+  finally{client?.release();}
+});
+app.post('/api/admin/saurus-sales/import',requireGoogle,admin,async(req,res,next)=>{
+  let client;
+  try {
+    if(!Array.isArray(req.body?.sales)||!req.body.sales.length||req.body.sales.length>20)
+      throw failure('INVALID_SAURUS_BATCH');
+    let imported=0,updated=0;
+    client=await pool.connect();await client.query('BEGIN');
+    for(const record of req.body.sales){
+      let s;
+      try{s=normalizeSaurusSale(record);}catch(e){throw failure(e.message);}
+      const mapping=(await client.query(`SELECT unit_id,register_id FROM saurus_register_mappings
+        WHERE external_store_id=$1 AND external_register_number=$2`,[s.storeId,s.registerNumber])).rows[0];
+      const old=(await client.query(`SELECT id FROM sales WHERE source='SAURUS' AND external_sale_id=$1`,[s.externalId])).rows[0];
+      const {rows}=await client.query(`INSERT INTO sales(source,external_sale_id,external_store_id,external_register_number,
+        source_status,unit_id,register_id,client_sale_id,occurred_at,status,total_cents,payload_hash,raw_payload)
+        VALUES('SAURUS',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        ON CONFLICT(source,external_sale_id) WHERE external_sale_id IS NOT NULL DO UPDATE SET
+          external_store_id=excluded.external_store_id,external_register_number=excluded.external_register_number,
+          source_status=excluded.source_status,unit_id=excluded.unit_id,register_id=excluded.register_id,
+          occurred_at=excluded.occurred_at,status=excluded.status,total_cents=excluded.total_cents,
+          payload_hash=excluded.payload_hash,raw_payload=excluded.raw_payload RETURNING id`,
+        [s.externalId,s.storeId,s.registerNumber,s.sourceStatus,mapping?.unit_id||null,mapping?.register_id||null,
+          `SAURUS:${s.externalId}`.slice(0,100),s.occurredAt,s.status,s.totalCents,sha(JSON.stringify(s)),
+          JSON.stringify({source:'SAURUS',externalSaleId:s.externalId,externalStoreId:s.storeId,
+            externalRegisterNumber:s.registerNumber})]);
+      const id=rows[0].id;
+      for(const table of ['sale_items','sale_payments','sale_installments','sale_tef'])
+        await client.query(`DELETE FROM ${table} WHERE sale_id=$1`,[id]);
+      const externalProductIds=[...new Set(s.items.map(i=>i.externalProductId).filter(Boolean))];
+      const productRows=externalProductIds.length?(await client.query('SELECT id,external_id FROM products WHERE external_id=ANY($1::text[])',[externalProductIds])).rows:[];
+      const productIds=new Map(productRows.map(p=>[p.external_id,p.id]));
+      for(const i of s.items)await client.query(`INSERT INTO sale_items(sale_id,line_number,external_item_id,external_product_id,
+        product_id,product_code,description,unit_of_measure,quantity,unit_price_cents,source_unit_price,
+        total_cents,discount_cents) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [id,i.lineNumber,i.externalId,i.externalProductId,productIds.get(i.externalProductId)||null,i.productCode,
+          i.description,i.unit,i.quantity,i.unitPriceCents,i.sourceUnitPrice,i.totalCents,i.discountCents]);
+      for(const p of s.payments)await client.query(`INSERT INTO sale_payments(sale_id,line_number,external_payment_id,
+        method,amount_cents,metadata) VALUES($1,$2,$3,$4,$5,$6)`,
+        [id,p.lineNumber,p.externalId,p.method,p.amountCents,JSON.stringify(p.plan?{plan:p.plan}:{})]);
+      for(const p of s.installments)await client.query(`INSERT INTO sale_installments(sale_id,line_number,external_id,
+        external_payment_id,due_date,amount_cents,paid_cents,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id,p.lineNumber,p.externalId,p.externalPaymentId,p.dueDate,p.amountCents,p.paidCents,p.status]);
+      for(const p of s.tef)await client.query(`INSERT INTO sale_tef(sale_id,line_number,external_id,
+        external_payment_id,transaction_id,authorization_code,nsu,control_code,status,transaction_type,occurred_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [id,p.lineNumber,p.externalId,p.externalPaymentId,p.transactionId,p.authorizationCode,p.nsu,
+          p.controlCode,p.status,p.transactionType,p.occurredAt]);
+      if(old)updated++;else imported++;
+    }
+    await audit(client,req.user.email,'IMPORT','saurus_sales','batch',{imported,updated});
+    await client.query('COMMIT');res.json({imported,updated});
+  }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}
+  finally{client?.release();}
 });
 
 async function requireRegister(req,_res,next){

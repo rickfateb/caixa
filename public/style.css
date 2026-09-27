@@ -4,3 +4,7 @@
 .token p{margin:8px 0 12px;color:#6a766d;font-size:13px}
 .token-key{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .token-key input{flex:1;min-width:220px;margin:0;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.06em}
+.sale-dialog{max-width:min(1100px,calc(100vw - 28px));width:100%;max-height:90vh;overflow:auto}
+.sale-dialog .heading{align-items:flex-start}.sale-dialog .heading p{color:#6a766d;font-size:13px}
+.sale-tabs{margin:12px 0;flex-wrap:wrap}.sale-tabs button.selected{background:#234832;color:white}
+#mappings-list select{min-width:155px;margin:0;padding:7px;font-size:12px}

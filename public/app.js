@@ -3,7 +3,7 @@ const safe=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&l
 const brl=cents=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(cents||0)/100);
 const asCents=value=>Math.round(Number(String(value).replace(',','.'))*100);
 let token=sessionStorage.getItem('facinho_google_token')||'';
-let me=null,units=[],products=[],promotions=[];
+let me=null,units=[],products=[],promotions=[],salesOffset=0;
 const flash=(message,error=false)=>{const el=$('flash');el.textContent=message;el.className='flash'+(error?' error':'');el.hidden=false;setTimeout(()=>el.hidden=true,7000);};
 async function api(url,options={}){
   const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})}});
@@ -13,7 +13,7 @@ async function api(url,options={}){
 }
 const send=(url,method,body)=>api(url,{method,body:JSON.stringify(body)});
 const table=(headers,rows)=>`<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${safe(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${headers.length}">Nenhum registro.</td></tr>`}</tbody></table></div>`;
-function selectUnits(){for(const id of ['price-unit','register-unit','settings-unit']){const el=$(id),old=el.value;el.innerHTML=units.filter(u=>u.active).map(u=>`<option value="${u.id}">${safe(u.name)} (${safe(u.acronym)})</option>`).join('');if(units.some(u=>String(u.id)===old))el.value=old;}}
+function selectUnits(){for(const id of ['price-unit','register-unit','settings-unit','sales-unit']){const el=$(id),old=el.value;el.innerHTML=(id==='sales-unit'?'<option value="">Todas</option>':'')+units.filter(u=>u.active).map(u=>`<option value="${u.id}">${safe(u.name)} (${safe(u.acronym)})</option>`).join('');if(units.some(u=>String(u.id)===old))el.value=old;}}
 async function loadUnits(){units=await api('/api/admin/units');selectUnits();$('units-list').innerHTML=table(['Sigla','Unidade','ID externo','Status',''],units.map(u=>`<tr><td>${safe(u.acronym)}</td><td>${safe(u.name)}</td><td>${safe(u.external_id)}</td><td>${u.active?'Ativa':'Inativa'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-unit="${u.id}">Editar</button>`:''}</td></tr>`));}
 async function loadProducts(){const q=encodeURIComponent($('product-search').value);products=await api(`/api/admin/products?limit=200&q=${q}`);$('products-list').innerHTML=table(['Código','Produto','Categoria','Preço padrão','EAN','Status',''],products.map(p=>`<tr><td>${safe(p.code)}</td><td>${safe(p.description)}</td><td>${safe(p.category)}</td><td>${p.default_sale_price_cents==null?'—':brl(p.default_sale_price_cents)}</td><td>${safe((p.barcodes||[]).join(', '))}</td><td>${p.active?'Ativo':'Inativo'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-product="${p.id}">Editar</button>`:''}</td></tr>`));$('price-product').innerHTML=products.map(p=>`<option value="${p.id}">${safe(p.description)}</option>`).join('');}
 async function loadPrices(){const unit=$('price-unit').value;if(!unit)return;$('prices-list').innerHTML=table(['Produto','Código','Categoria','Preço','Ativo',''],(await api(`/api/admin/unit-products/${unit}`)).map(p=>`<tr><td>${safe(p.description)}</td><td>${safe(p.code)}</td><td>${safe(p.category)}</td><td>${brl(p.sale_price_cents)}</td><td>${p.active?'Sim':'Não'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-remove-price="${p.product_id}">Remover preço específico</button>`:''}</td></tr>`));}
@@ -27,8 +27,42 @@ function showRegisterToken(data){
   result.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 async function loadSettings(){const unit=$('settings-unit').value;if(unit)$('settings-value').value=JSON.stringify((await api(`/api/admin/settings/${unit}`)).settings,null,2);}
-async function loadSales(){$('sales-list').innerHTML=table(['Data da venda','Unidade','Caixa','ID da venda','Status','Total'],(await api('/api/admin/sales')).map(s=>`<tr><td>${new Date(s.occurred_at).toLocaleString('pt-BR')}</td><td>${safe(s.unit_name)}</td><td>${safe(s.register_name)}</td><td>${safe(s.client_sale_id)}</td><td>${safe(s.status)}</td><td>${brl(s.total_cents)}</td></tr>`));}
-async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sales:loadSales}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
+async function loadSales(more=false){
+  if(!more)salesOffset=0;
+  const params=new URLSearchParams({offset:String(salesOffset),source:$('sales-source').value,
+    unitId:$('sales-unit').value,q:$('sales-search').value.trim()});
+  const rows=await api(`/api/admin/sales?${params}`);
+  const body=rows.map(s=>`<tr><td>${new Date(s.occurred_at).toLocaleString('pt-BR')}</td><td>${s.source==='SAURUS'?'Saurus':'Portal Caixa'}</td><td>${safe(s.unit_name||'A vincular')}</td><td>${safe(s.register_name||s.external_register_number||'—')}</td><td>${safe(s.external_sale_id||s.client_sale_id)}</td><td>${safe(s.source_status||s.status)}</td><td>${safe(s.item_count)}</td><td>${brl(s.total_cents)}</td><td><button class="secondary" data-sale-detail="${s.id}">Detalhes</button></td></tr>`);
+  if(more){const old=$('sales-list').querySelector('tbody');if(old)old.insertAdjacentHTML('beforeend',body.join(''));}
+  else $('sales-list').innerHTML=table(['Data','Origem','Unidade','Caixa','ID','Status','Itens','Total',''],body);
+  salesOffset+=rows.length;$('more-sales').hidden=rows.length<100;
+}
+async function showSaleDetail(id){
+  const s=await api(`/api/admin/sales/${id}`);
+  const d=document.createElement('dialog');d.className='sale-dialog';
+  const headings={items:'Itens',payments:'Pagamentos',installments:'Parcelas',tef:'TEF'};
+  const sections={
+    items:table(['#','Produto','ID de origem','Código','Quantidade','Medida','Unitário','Desconto','Total'],s.items.map(i=>`<tr><td>${i.line_number}</td><td>${safe(i.description)}</td><td>${safe(i.external_product_id||i.product_id)}</td><td>${safe(i.product_code||i.barcode)}</td><td>${safe(i.quantity)}</td><td>${safe(i.unit_of_measure)}</td><td>${brl(i.unit_price_cents)}</td><td>${brl(i.discount_cents)}</td><td>${brl(i.total_cents)}</td></tr>`)),
+    payments:table(['#','Forma','ID de origem','Valor','Referência'],s.payments.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.method)}</td><td>${safe(p.external_payment_id)}</td><td>${brl(p.amount_cents)}</td><td>${safe(p.provider_reference)}</td></tr>`)),
+    installments:table(['#','ID de origem','Pagamento','Vencimento','Valor','Pago','Status'],s.installments.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.external_id)}</td><td>${safe(p.external_payment_id)}</td><td>${p.due_date?new Date(p.due_date).toLocaleDateString('pt-BR',{timeZone:'UTC'}):'—'}</td><td>${p.amount_cents==null?'—':brl(p.amount_cents)}</td><td>${p.paid_cents==null?'—':brl(p.paid_cents)}</td><td>${safe(p.status)}</td></tr>`)),
+    tef:table(['#','ID de origem','Pagamento','NSU','Autorização','Controle','Tipo','Status'],s.tef.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.external_id)}</td><td>${safe(p.external_payment_id)}</td><td>${safe(p.nsu)}</td><td>${safe(p.authorization_code)}</td><td>${safe(p.control_code)}</td><td>${safe(p.transaction_type)}</td><td>${safe(p.status)}</td></tr>`))
+  };
+  d.innerHTML=`<div class="heading"><div><h2>Venda ${safe(s.external_sale_id||s.client_sale_id)}</h2><p>${s.source==='SAURUS'?'Saurus':'Portal Caixa'} · ${safe(s.unit_name||'Unidade a vincular')} · Caixa ${safe(s.register_name||s.external_register_number||'—')} · ${new Date(s.occurred_at).toLocaleString('pt-BR')} · ${brl(s.total_cents)}</p></div><button class="secondary" data-close>Fechar</button></div><nav class="sale-tabs">${Object.entries(headings).map(([key,label])=>`<button data-sale-tab="${key}" class="${key==='items'?'selected':''}">${label} (${s[key].length})</button>`).join('')}</nav><div class="sale-detail-content">${sections.items}</div>`;
+  d.querySelector('[data-close]').onclick=()=>d.close();
+  d.addEventListener('click',e=>{const key=e.target.closest('[data-sale-tab]')?.dataset.saleTab;if(!key)return;
+    d.querySelectorAll('[data-sale-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.saleTab===key));
+    d.querySelector('.sale-detail-content').innerHTML=sections[key];});
+  d.addEventListener('close',()=>d.remove());document.body.append(d);d.showModal();
+}
+async function loadMappings(){
+  const [rows,registers]=await Promise.all([api('/api/admin/saurus-mappings'),api('/api/admin/registers')]);
+  const unitOptions=id=>`<option value="">A vincular</option>`+units.map(u=>`<option value="${u.id}" ${String(u.id)===String(id)?'selected':''}>${safe(u.name)} (${safe(u.acronym)})</option>`).join('');
+  const registerOptions=(unitId,registerId)=>`<option value="">Sem vínculo com caixa</option>`+registers.filter(r=>String(r.unit_id)===String(unitId)).map(r=>`<option value="${r.id}" ${String(r.id)===String(registerId)?'selected':''}>${safe(r.name)}</option>`).join('');
+  $('mappings-list').innerHTML=table(['Loja Saurus','Caixa Saurus','Vendas','Unidade Facinho','Caixa Facinho',''],rows.map(m=>`<tr data-map-store="${safe(m.external_store_id)}" data-map-register="${safe(m.external_register_number)}"><td>${safe(m.external_store_id)}</td><td>${safe(m.external_register_number)}</td><td>${m.sale_count}</td><td><select data-map-unit>${unitOptions(m.unit_id)}</select></td><td><select data-map-target>${registerOptions(m.unit_id,m.register_id)}</select></td><td>${me.role==='ADMINISTRADOR'?'<button class="secondary" data-save-mapping>Salvar vínculo</button>':''}</td></tr>`));
+  $('mappings-list').onchange=e=>{if(!e.target.matches('[data-map-unit]'))return;
+    const row=e.target.closest('tr');row.querySelector('[data-map-target]').innerHTML=registerOptions(e.target.value,null);};
+}
+async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sales:()=>loadSales(),['saurus-mappings']:loadMappings}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
 function editor(kind,item={}){
   const fields=kind==='unit'?[['name','Nome da unidade'],['acronym','Sigla'],['externalId','ID da unidade no cadastro atual'],['document','Documento']]:[
     ['description','Descrição'],['code','Código do produto'],['externalId','ID no cadastro atual'],['barcodes','Códigos de barras separados por vírgula'],
@@ -128,9 +162,21 @@ document.addEventListener('click',async e=>{const button=e.target.closest('butto
     if(button.dataset.toggleRegister){await send(`/api/admin/registers/${button.dataset.toggleRegister}`,'PATCH',{active:button.dataset.active!=='true'});await loadRegisters();}
     if(button.id==='save-settings'){let settings;try{settings=JSON.parse($('settings-value').value);}catch{throw Error('JSON inválido.');}await send(`/api/admin/settings/${$('settings-unit').value}`,'PUT',{settings});flash('Configurações salvas.');}
     if(button.id==='refresh-sales')await loadSales();
+    if(button.id==='more-sales')await loadSales(true);
+    if(button.id==='refresh-mappings')await loadMappings();
+    if(button.dataset.saleDetail)await showSaleDetail(button.dataset.saleDetail);
+    if(button.dataset.saveMapping){
+      const row=button.closest('tr');
+      const store=encodeURIComponent(row.dataset.mapStore),number=encodeURIComponent(row.dataset.mapRegister);
+      await send(`/api/admin/saurus-mappings/${store}/${number}`,'PUT',{
+        unitId:row.querySelector('[data-map-unit]').value||null,registerId:row.querySelector('[data-map-target]').value||null});
+      flash('Vínculo salvo.');await loadMappings();
+    }
   }catch(err){flash(err.message,true);}
 });
 for(const [id,fn] of [['price-unit',loadPrices],['settings-unit',loadSettings]])$(id).addEventListener('change',()=>fn().catch(err=>flash(err.message,true)));
+for(const id of ['sales-source','sales-unit'])$(id).addEventListener('change',()=>loadSales().catch(err=>flash(err.message,true)));
+let salesSearchTimer;$('sales-search').addEventListener('input',()=>{clearTimeout(salesSearchTimer);salesSearchTimer=setTimeout(()=>loadSales().catch(err=>flash(err.message,true)),300);});
 let searchTimer;$('product-search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadProducts().catch(err=>flash(err.message,true)),300);});
 let priceTimer;$('price-product-search').addEventListener('input',()=>{clearTimeout(priceTimer);priceTimer=setTimeout(async()=>{try{const q=encodeURIComponent($('price-product-search').value);const found=await api(`/api/admin/products?limit=200&q=${q}`);$('price-product').innerHTML=found.map(p=>`<option value="${p.id}">${safe(p.description)} · ${safe(p.code)}</option>`).join('');}catch(err){flash(err.message,true);}},300);});
 async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-promotion,#save-price,#create-register,#save-settings').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}

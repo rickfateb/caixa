@@ -28,6 +28,12 @@ npm start
 
 O servidor cria as tabelas de `sql/001_initial.sql` na inicialização e insere o primeiro administrador caso ainda não exista. Só configure um e-mail real autorizado; o cadastro é exclusivo deste projeto. Um cadastro antigo não é copiado automaticamente.
 
+## Vendas Saurus e consulta no portal
+
+A migração `sql/004_sales_saurus.sql` acrescenta a origem e IDs externos às vendas, precisão de quatro casas para a quantidade, identificadores dos itens e pagamentos, além das tabelas `sale_installments`, `sale_tef` e `saurus_register_mappings`. A aba **Vendas** filtra por origem/unidade/ID e abre os detalhes de itens, pagamentos, parcelas e TEF; a aba **Vínculos Saurus** associa `(emit_idLoja, mov_numCaixa)` à unidade Facinho e opcionalmente ao caixa local. Os números da Saurus não são inferidos a partir das siglas das lojas.
+
+O endpoint administrativo `POST /api/admin/saurus-sales/import` aceita até 20 vendas por requisição, sob login Google de administrador, com `sales: [{venda, produtos, pagamentos, parcelas, tef}]`. Cada objeto contém os campos originais da Cobile/Saurus ou uma propriedade `dados` com esses campos. Reenviar o mesmo `mov_idMov` atualiza seus dados e substitui os filhos na mesma transação, sem duplicar. A consulta pode retornar vendas Saurus sem unidade enquanto o vínculo não for preenchido. O importador só guarda campos operacionais selecionados; dados pessoais de cliente e vias de comprovantes TEF não são copiados. O envio normal do novo caixa em `POST /api/v1/sales` permanece independente.
+
 ## Contrato para o Cursor
 
 Autentique o app com a chave do caixa no cabeçalho `Authorization: Bearer FCX-XXXX-XXXX-XXXX-XXXX`. A chave é gerada ao criar o caixa, vem oculta e pode ser mostrada ou copiada apenas nessa página; após recarregar, não pode ser recuperada. Para um caixa existente, o administrador pode gerar outra chave na aba Caixas, invalidando imediatamente a anterior. As chaves antigas no formato `fcx_...` continuam válidas enquanto não forem substituídas. Guarde a chave em armazenamento seguro da maquininha. **Não coloque a chave no repositório nem inclua dados completos de cartão em `metadata` ou `raw_payload`.** O portal usa centavos inteiros para valores, quantidade decimal de até três casas e datas ISO 8601.
