@@ -19,7 +19,13 @@ async function loadProducts(){const q=encodeURIComponent($('product-search').val
 async function loadPrices(){const unit=$('price-unit').value;if(!unit)return;$('prices-list').innerHTML=table(['Produto','Código','Categoria','Preço','Ativo',''],(await api(`/api/admin/unit-products/${unit}`)).map(p=>`<tr><td>${safe(p.description)}</td><td>${safe(p.code)}</td><td>${safe(p.category)}</td><td>${brl(p.sale_price_cents)}</td><td>${p.active?'Sim':'Não'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-remove-price="${p.product_id}">Remover preço específico</button>`:''}</td></tr>`));}
 const localDate=value=>value?new Date(value).toLocaleString('sv-SE',{timeZone:'America/Sao_Paulo'}).replace(' ','T').slice(0,16):'';
 async function loadPromotions(){promotions=await api('/api/admin/promotions');$('promotions-list').innerHTML=table(['Nome','Regra','Abrangência','Vigência (Brasília)','Status',''],promotions.map(p=>`<tr><td>${safe(p.name)}</td><td>${safe(({PRICE:'Preço temporário',PERCENT:'Desconto',BUY_N_PAY_M:'Compre e pague',SECOND_UNIT_PRICE:'2ª unidade por preço fixo'})[p.type])}</td><td>${p.scope==='ALL'?'Todos os produtos':`${p.product_ids.length} produto(s)`} · ${p.unit_ids.length?`${p.unit_ids.length} unidade(s)`:'Todas as unidades'}</td><td>${safe(localDate(p.starts_at))} a ${safe(localDate(p.ends_at))}${p.weekdays?' · semanal':''}</td><td>${p.active?'Ativa':'Inativa'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-promotion="${p.id}">Editar</button>`:''}</td></tr>`));}
-async function loadRegisters(){$('registers-list').innerHTML=table(['Unidade','Caixa','Número','Status',''],(await api('/api/admin/registers')).map(r=>`<tr><td>${safe(units.find(u=>u.id===r.unit_id)?.name)}</td><td>${safe(r.name)}</td><td>${safe(r.external_number)}</td><td>${r.active?'Ativo':'Inativo'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-toggle-register="${r.id}" data-active="${r.active}">${r.active?'Desativar':'Ativar'}</button>`:''}</td></tr>`));}
+async function loadRegisters(){$('registers-list').innerHTML=table(['Unidade','Caixa','Número','Status',''],(await api('/api/admin/registers')).map(r=>`<tr><td>${safe(units.find(u=>u.id===r.unit_id)?.name)}</td><td>${safe(r.name)}</td><td>${safe(r.external_number)}</td><td>${r.active?'Ativo':'Inativo'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-toggle-register="${r.id}" data-active="${r.active}">${r.active?'Desativar':'Ativar'}</button> <button class="secondary" data-rotate-register="${r.id}">Gerar nova chave</button>`:''}</td></tr>`));}
+function showRegisterToken(data){
+  const result=$('token-result');
+  result.innerHTML=`<strong>Chave do caixa ${safe(data.name)}</strong><p>Guarde esta chave agora. Após sair desta página, ela não poderá ser consultada novamente.</p><div class="token-key"><input id="register-token" type="password" readonly autocomplete="off" spellcheck="false" aria-label="Chave do caixa" value="${safe(data.token)}"><button type="button" class="secondary" data-token-action="toggle" aria-controls="register-token" aria-pressed="false">Mostrar</button><button type="button" data-token-action="copy">Copiar</button></div>`;
+  result.hidden=false;
+  result.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
 async function loadSettings(){const unit=$('settings-unit').value;if(unit)$('settings-value').value=JSON.stringify((await api(`/api/admin/settings/${unit}`)).settings,null,2);}
 async function loadSales(){$('sales-list').innerHTML=table(['Data da venda','Unidade','Caixa','ID da venda','Status','Total'],(await api('/api/admin/sales')).map(s=>`<tr><td>${new Date(s.occurred_at).toLocaleString('pt-BR')}</td><td>${safe(s.unit_name)}</td><td>${safe(s.register_name)}</td><td>${safe(s.client_sale_id)}</td><td>${safe(s.status)}</td><td>${brl(s.total_cents)}</td></tr>`));}
 async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sales:loadSales}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
@@ -99,10 +105,14 @@ document.addEventListener('click',async e=>{const button=e.target.closest('butto
     if(button.dataset.removePrice){if(confirm('Remover o preço desta unidade? O caixa passará a usar o preço padrão, quando cadastrado.')){await api(`/api/admin/unit-products/${$('price-unit').value}/${button.dataset.removePrice}`,{method:'DELETE'});flash('Preço específico removido.');await loadPrices();}}
     if(button.id==='create-register'){
       const data=await send('/api/admin/registers','POST',{unitId:$('register-unit').value,name:$('register-name').value,externalNumber:$('register-number').value});
-      const result=$('token-result');
-      result.innerHTML=`<strong>Chave do caixa ${safe(data.name)}</strong><p>Guarde esta chave agora. Após sair desta página, ela não poderá ser consultada novamente.</p><div class="token-key"><input id="register-token" type="password" readonly autocomplete="off" spellcheck="false" aria-label="Chave do caixa" value="${safe(data.token)}"><button type="button" class="secondary" data-token-action="toggle" aria-controls="register-token" aria-pressed="false">Mostrar</button><button type="button" data-token-action="copy">Copiar</button></div>`;
-      result.hidden=false;
+      showRegisterToken(data);
       await loadRegisters();
+    }
+    if(button.dataset.rotateRegister){
+      if(!confirm('Gerar uma nova chave para este caixa? A chave anterior deixará de funcionar imediatamente no aplicativo do caixa.'))return;
+      const data=await send(`/api/admin/registers/${button.dataset.rotateRegister}/rotate-token`,'POST',{});
+      showRegisterToken(data);
+      flash('Nova chave gerada. Atualize o aplicativo do caixa com esta chave.');
     }
     if(button.dataset.tokenAction==='toggle'){
       const input=$('register-token');

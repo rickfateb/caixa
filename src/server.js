@@ -239,6 +239,17 @@ app.post('/api/admin/registers',requireGoogle,admin,async(req,res,next)=>{
     await audit(pool,req.user.email,'CREATE','registers',rows[0].id);res.status(201).json({...rows[0],token});
   }catch(e){next(e);}
 });
+app.post('/api/admin/registers/:id/rotate-token',requireGoogle,admin,async(req,res,next)=>{
+  try {
+    if(!positiveId(req.params.id)) throw failure('INVALID_REGISTER');
+    const token=createRegisterToken();
+    const {rows}=await pool.query('UPDATE registers SET token_hash=$2 WHERE id=$1 RETURNING id,unit_id,name,external_number,active',
+      [req.params.id,sha(token)]);
+    if(!rows.length) throw failure('NOT_FOUND',404);
+    await audit(pool,req.user.email,'ROTATE_TOKEN','registers',req.params.id);
+    res.json({...rows[0],token});
+  }catch(e){next(e);}
+});
 app.patch('/api/admin/registers/:id',requireGoogle,admin,async(req,res,next)=>{
   try {
     if(!positiveId(req.params.id)||typeof req.body.active!=='boolean') throw failure('INVALID_REGISTER');

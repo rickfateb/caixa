@@ -30,7 +30,7 @@ O servidor cria as tabelas de `sql/001_initial.sql` na inicialização e insere 
 
 ## Contrato para o Cursor
 
-Autentique o app com a chave do caixa no cabeçalho `Authorization: Bearer FCX-XXXX-XXXX-XXXX-XXXX`. A chave é gerada ao criar o caixa, vem oculta e pode ser mostrada ou copiada apenas nessa página; após recarregar, não pode ser recuperada. As chaves antigas no formato `fcx_...` continuam válidas. Guarde a chave em armazenamento seguro da maquininha. **Não coloque a chave no repositório nem inclua dados completos de cartão em `metadata` ou `raw_payload`.** O portal usa centavos inteiros para valores, quantidade decimal de até três casas e datas ISO 8601.
+Autentique o app com a chave do caixa no cabeçalho `Authorization: Bearer FCX-XXXX-XXXX-XXXX-XXXX`. A chave é gerada ao criar o caixa, vem oculta e pode ser mostrada ou copiada apenas nessa página; após recarregar, não pode ser recuperada. Para um caixa existente, o administrador pode gerar outra chave na aba Caixas, invalidando imediatamente a anterior. As chaves antigas no formato `fcx_...` continuam válidas enquanto não forem substituídas. Guarde a chave em armazenamento seguro da maquininha. **Não coloque a chave no repositório nem inclua dados completos de cartão em `metadata` ou `raw_payload`.** O portal usa centavos inteiros para valores, quantidade decimal de até três casas e datas ISO 8601.
 
 ### 1. Catálogo
 
