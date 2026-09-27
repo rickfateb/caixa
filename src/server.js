@@ -209,7 +209,8 @@ app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
       up.sale_price_cents,up.updated_at,COALESCE(array_agg(b.barcode) FILTER(WHERE b.barcode IS NOT NULL),'{}') AS barcodes
       FROM unit_products up JOIN products p ON p.id=up.product_id
       LEFT JOIN product_barcodes b ON b.product_id=p.id
-      WHERE up.unit_id=$1 AND up.active=true AND p.active=true GROUP BY p.id,up.unit_id ORDER BY p.id`,[req.register.unit_id]);
+      WHERE up.unit_id=$1 AND up.active=true AND p.active=true
+      GROUP BY p.id,up.unit_id,up.product_id,up.sale_price_cents,up.updated_at ORDER BY p.id`,[req.register.unit_id]);
     res.json({unitId:req.register.unit_id,registerId:req.register.id,generatedAt:new Date().toISOString(),products:rows});
   }catch(e){next(e);}
 });
