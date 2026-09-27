@@ -342,8 +342,10 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
     for(let i=0;i<b.items.length;i++){
       const item=b.items[i];
       if(item.productId){
-        const product=await client.query(`SELECT 1 FROM unit_products up JOIN products p ON p.id=up.product_id
-          WHERE up.unit_id=$1 AND up.product_id=$2`,[req.register.unit_id,item.productId]);
+        const product=await client.query(`SELECT 1 FROM products p
+          LEFT JOIN unit_products up ON up.product_id=p.id AND up.unit_id=$1
+          WHERE p.id=$2 AND p.active=true AND (up.active IS NULL OR up.active=true)
+          AND COALESCE(up.sale_price_cents,p.default_sale_price_cents) IS NOT NULL`,[req.register.unit_id,item.productId]);
         if(!product.rows.length) throw failure('PRODUCT_NOT_IN_UNIT');
       }
       await client.query(`INSERT INTO sale_items(sale_id,line_number,product_id,barcode,description,quantity,unit_price_cents,total_cents,discount_cents,promotion_id)
