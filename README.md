@@ -102,3 +102,21 @@ O esquema foi desenhado tomando como referência o cadastro Saurus e as tabelas 
 ## Segurança e limites desta etapa
 
 O repositório foi criado como **público** no GitHub. Nunca suba `.env`, tokens de caixas, credenciais PostgreSQL ou dados de vendas reais. Token do caixa fica como hash SHA-256 no banco; o valor original aparece só na criação. Login Google do portal consulta `users` local; alterações administrativas são auditadas. Sem integração fiscal, emissão de nota, captura de cartão, baixa de estoque ou reconciliação automática com o Cobile nesta primeira versão.
+
+## Preços e promoções (versão 2)
+
+O produto possui `default_sale_price_cents` (preço padrão). A tabela `unit_products.sale_price_cents` é uma substituição opcional por loja. Produto ativo com preço padrão aparece em todas as unidades, salvo se houver vínculo `unit_products.active=false`; produto sem preço padrão só aparece se possuir preço específico. Para voltar ao padrão, remova o preço da unidade na aba correspondente.
+
+No catálogo de cada caixa, `base_price_cents` é o preço da unidade se cadastrado, caso contrário o preço padrão; `sale_price_cents` é o preço calculado **agora** para uma unidade, `price_source` é `PROMOTION`, `UNIT` ou `DEFAULT`. O retorno também inclui `default_sale_price_cents`, `unit_sale_price_cents`, `promotion_id`, `timeZone: "America/Sao_Paulo"` e a lista `promotions` para essa unidade. Cada promoção contém `scope` (`ALL`/`PRODUCTS`), `product_ids`, `unit_ids`, `type`, parâmetros da regra, `starts_at`, `ends_at`, e, quando recorrente, `weekdays` (0=domingo, 6=sábado), `local_start` e `local_end`. Instantes de início são inclusivos e os de fim exclusivos. O app deve recalcular no momento da venda, pois `sale_price_cents` é apenas a fotografia do instante do download.
+
+Uma promoção ativa e dentro de sua vigência prevalece sobre o preço base. Quando várias atingem o mesmo produto, vence a de maior `priority`; no empate, a específica do produto; persistindo empate, a de maior ID. As promoções **não se acumulam**. Regras de desconto por quantidade valem para unidades inteiras do mesmo produto na mesma venda; itens fracionados não recebem desconto por quantidade. `BUY_N_PAY_M` aplica cada grupo completo de N unidades. `SECOND_UNIT_PRICE` aplica o valor especial a cada segunda unidade de um par. `PERCENT` calcula o desconto sobre o total da linha e arredonda para centavos. Para preço temporário (`PRICE`), a linha usa o novo preço unitário, inclusive quando acima do preço base.
+
+No `POST /api/v1/sales`, cada item pode trazer `discountCents` (padrão 0) e `promotionId`. Envie `unitPriceCents` como o preço unitário antes do desconto para `PERCENT` e regras por quantidade; `totalCents = round(quantity × unitPriceCents) - discountCents`. Em `PRICE`, envie o preço temporário em `unitPriceCents`, com desconto 0. O `totalCents` da venda e a soma dos pagamentos devem refletir esses totais líquidos. O servidor armazena o payload original para auditoria; uma venda offline pode ter uma promoção que já expirou no momento da sincronização.
+
+Exemplo: preço base de R$ 4,99, duas unidades, segunda por R$ 1,99:
+
+```json
+{"productId":"10","description":"Produto","quantity":2,"unitPriceCents":499,"discountCents":300,"totalCents":698,"promotionId":"7"}
+```
+
+A migração `sql/003_units.sql` cadastra 13 siglas observadas na aba `CARGAS_AUTO` da planilha operacional em 27/09/2026, sem sobrescrever unidades previamente cadastradas. A fonte não continha IDs externos nem situação operacional confiável; revise o campo de status no portal antes de vincular caixas às unidades.

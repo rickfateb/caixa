@@ -5,6 +5,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { pickPromotion, quotePrice } from './pricing.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { DATABASE_URL, GOOGLE_CLIENT_ID, ADMIN_EMAIL } = process.env;
@@ -22,6 +23,8 @@ const text = (value, max = 250) => typeof value === 'string' ? value.trim().slic
 
 async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/001_initial.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/002_promotions.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/003_units.sql'), 'utf8'));
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);
 }
@@ -101,7 +104,7 @@ async function saveProduct(req, res, next) {
     const b = req.body;
     if (!text(b.description,250)) throw failure('PRODUCT_DESCRIPTION_REQUIRED');
     if (b.id && !positiveId(b.id)) throw failure('INVALID_ID');
-    if (b.priceCents !== undefined && !cent(b.priceCents)) throw failure('INVALID_PRICE');
+    if (b.defaultPriceCents != null && !cent(b.defaultPriceCents)) throw failure('INVALID_PRICE');
     if (b.purchaseCostCents != null && !cent(b.purchaseCostCents)) throw failure('INVALID_COST');
     if (b.costCents != null && !cent(b.costCents)) throw failure('INVALID_COST');
     if (!Array.isArray(b.barcodes) || b.barcodes.length > 20) throw failure('INVALID_BARCODES');
@@ -111,16 +114,16 @@ async function saveProduct(req, res, next) {
     const values=[text(b.externalId,80)||null,text(b.status,30)||'ATIVO',text(b.itemType,50)||null,text(b.code,80)||null,
       text(b.description,250),text(b.registeredDescription,250)||null,text(b.ncm,20)||null,
       text(b.category,120)||null,text(b.subcategory,120)||null,text(b.brand,120)||null,text(b.unitOfMeasure,30)||null,
-      b.purchaseCostCents??null,b.costCents??null,b.active!==false];
+      b.purchaseCostCents??null,b.costCents??null,b.active!==false,b.defaultPriceCents??null];
     if (b.id) {
       result=await client.query(`UPDATE products SET external_id=$2,status=$3,item_type=$4,code=$5,description=$6,
         registered_description=$7,ncm=$8,category=$9,subcategory=$10,brand=$11,unit_of_measure=$12,
-        purchase_cost_cents=$13,cost_cents=$14,active=$15,updated_at=now() WHERE id=$1 RETURNING *`,[b.id,...values]);
+        purchase_cost_cents=$13,cost_cents=$14,active=$15,default_sale_price_cents=$16,updated_at=now() WHERE id=$1 RETURNING *`,[b.id,...values]);
       if (!result.rows.length) throw failure('NOT_FOUND',404);
       await client.query('DELETE FROM product_barcodes WHERE product_id=$1',[b.id]);
     } else {
       result=await client.query(`INSERT INTO products(external_id,status,item_type,code,description,registered_description,
-        ncm,category,subcategory,brand,unit_of_measure,purchase_cost_cents,cost_cents,active)
+        ncm,category,subcategory,brand,unit_of_measure,purchase_cost_cents,cost_cents,active,default_sale_price_cents)
         VALUES(${values.map((_,i)=>'$'+(i+1)).join(',')}) RETURNING *`,values);
     }
     for (const code of codes) await client.query('INSERT INTO product_barcodes(barcode,product_id) VALUES($1,$2)',[code,result.rows[0].id]);
@@ -148,6 +151,69 @@ app.put('/api/admin/unit-products/:unitId/:productId',requireGoogle,admin,async(
     await audit(pool,req.user.email,'UPSERT','unit_products',`${req.params.unitId}:${req.params.productId}`);res.json(rows[0]);
   } catch(e){next(e);}
 });
+app.delete('/api/admin/unit-products/:unitId/:productId',requireGoogle,admin,async(req,res,next)=>{
+  try {
+    if(!positiveId(req.params.unitId)||!positiveId(req.params.productId)) throw failure('INVALID_ID');
+    const result=await pool.query('DELETE FROM unit_products WHERE unit_id=$1 AND product_id=$2',[req.params.unitId,req.params.productId]);
+    if(!result.rowCount) throw failure('NOT_FOUND',404);
+    await audit(pool,req.user.email,'DELETE','unit_products',`${req.params.unitId}:${req.params.productId}`);
+    res.status(204).end();
+  }catch(e){next(e);}
+});
+const promotionsSql = `SELECT p.*,
+  COALESCE((SELECT array_agg(product_id ORDER BY product_id) FROM promotion_products WHERE promotion_id=p.id),'{}') AS product_ids,
+  COALESCE((SELECT array_agg(unit_id ORDER BY unit_id) FROM promotion_units WHERE promotion_id=p.id),'{}') AS unit_ids
+  FROM promotions p`;
+async function promotionsForUnit(unitId) {
+  const { rows } = await pool.query(`${promotionsSql} WHERE p.active=true AND p.ends_at>now()
+    AND (NOT EXISTS (SELECT 1 FROM promotion_units WHERE promotion_id=p.id)
+      OR EXISTS (SELECT 1 FROM promotion_units WHERE promotion_id=p.id AND unit_id=$1)) ORDER BY p.id`,[unitId]);
+  return rows;
+}
+app.get('/api/admin/promotions',requireGoogle,async(_req,res,next)=>{
+  try {res.json((await pool.query(`${promotionsSql} ORDER BY p.id DESC`)).rows);}catch(e){next(e);}
+});
+async function savePromotion(req,res,next) {
+  let client;
+  try {
+    const b=req.body;
+    if(b.id && !positiveId(b.id)) throw failure('INVALID_ID');
+    const type=b.type, scope=b.scope;
+    if(!text(b.name,120)||!['PRICE','PERCENT','BUY_N_PAY_M','SECOND_UNIT_PRICE'].includes(type)||!['ALL','PRODUCTS'].includes(scope)) throw failure('INVALID_PROMOTION');
+    const starts=new Date(b.startsAt), ends=new Date(b.endsAt);
+    if(!Number.isFinite(starts.getTime())||!Number.isFinite(ends.getTime())||ends<=starts) throw failure('INVALID_PERIOD');
+    const ids=(value)=>Array.isArray(value)&&value.every(positiveId)&&new Set(value.map(String)).size===value.length;
+    if(!ids(b.productIds)||!ids(b.unitIds)||scope==='PRODUCTS'&&!b.productIds.length||scope==='ALL'&&b.productIds.length) throw failure('INVALID_TARGETS');
+    const recurrent=b.weekdays!=null;
+    if(recurrent&&(!Array.isArray(b.weekdays)||!b.weekdays.length||new Set(b.weekdays).size!==b.weekdays.length||
+      !b.weekdays.every(d=>Number.isInteger(d)&&d>=0&&d<=6)||
+      !/^\d{2}:\d{2}$/.test(b.localStart)||!/^\d{2}:\d{2}$/.test(b.localEnd)||b.localStart>=b.localEnd||
+      b.localEnd>'23:59')) throw failure('INVALID_RECURRENCE');
+    if(!Number.isInteger(b.priority)||b.priority < -1000||b.priority > 1000) throw failure('INVALID_PRIORITY');
+    if(type==='PRICE'&&!cent(b.priceCents)||type==='PERCENT'&&(!Number.isFinite(b.percentOff)||b.percentOff<=0||b.percentOff>100)||
+      type==='BUY_N_PAY_M'&&(!Number.isInteger(b.buyQuantity)||b.buyQuantity<2||b.buyQuantity>100||!Number.isInteger(b.payQuantity)||b.payQuantity<1||b.payQuantity>=b.buyQuantity)||
+      type==='SECOND_UNIT_PRICE'&&!cent(b.secondUnitPriceCents)) throw failure('INVALID_RULE');
+    client=await pool.connect();await client.query('BEGIN');
+    const args=[text(b.name,120),type,scope,b.priority,type==='PRICE'?b.priceCents:null,
+      type==='PERCENT'?b.percentOff:null,type==='BUY_N_PAY_M'?b.buyQuantity:null,type==='BUY_N_PAY_M'?b.payQuantity:null,
+      type==='SECOND_UNIT_PRICE'?b.secondUnitPriceCents:null,starts.toISOString(),ends.toISOString(),
+      recurrent?b.weekdays:null,recurrent?b.localStart:null,recurrent?b.localEnd:null,b.active!==false];
+    const fields='name,type,scope,priority,price_cents,percent_off,buy_quantity,pay_quantity,second_unit_price_cents,starts_at,ends_at,weekdays,local_start,local_end,active';
+    let result;
+    if(b.id){
+      result=await client.query(`UPDATE promotions SET ${fields.split(',').map((field,i)=>`${field}=$${i+2}`).join(',')},updated_at=now() WHERE id=$1 RETURNING *`,[b.id,...args]);
+      if(!result.rows.length) throw failure('NOT_FOUND',404);
+      await client.query('DELETE FROM promotion_products WHERE promotion_id=$1',[b.id]);
+      await client.query('DELETE FROM promotion_units WHERE promotion_id=$1',[b.id]);
+    }else result=await client.query(`INSERT INTO promotions(${fields}) VALUES(${args.map((_,i)=>'$'+(i+1)).join(',')}) RETURNING *`,args);
+    for(const id of b.productIds) await client.query('INSERT INTO promotion_products(promotion_id,product_id) VALUES($1,$2)',[result.rows[0].id,id]);
+    for(const id of b.unitIds) await client.query('INSERT INTO promotion_units(promotion_id,unit_id) VALUES($1,$2)',[result.rows[0].id,id]);
+    await audit(client,req.user.email,b.id?'UPDATE':'CREATE','promotions',result.rows[0].id);
+    await client.query('COMMIT');res.status(b.id?200:201).json({...result.rows[0],product_ids:b.productIds,unit_ids:b.unitIds});
+  }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}finally{client?.release();}
+}
+app.post('/api/admin/promotions',requireGoogle,admin,savePromotion);
+app.put('/api/admin/promotions/:id',requireGoogle,admin,(req,res,next)=>{req.body.id=req.params.id;savePromotion(req,res,next);});
 app.get('/api/admin/settings/:unitId',requireGoogle,async(req,res,next)=>{
   try {res.json((await pool.query('SELECT settings,updated_at FROM unit_settings WHERE unit_id=$1',[req.params.unitId])).rows[0]||{settings:{}});}catch(e){next(e);}
 });
@@ -206,12 +272,23 @@ app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
   try {
     const {rows}=await pool.query(`SELECT p.id,p.external_id,p.status,p.item_type,p.code,p.description,
       p.registered_description,p.ncm,p.category,p.subcategory,p.brand,p.unit_of_measure,
-      up.sale_price_cents,up.updated_at,COALESCE(array_agg(b.barcode) FILTER(WHERE b.barcode IS NOT NULL),'{}') AS barcodes
-      FROM unit_products up JOIN products p ON p.id=up.product_id
+      p.default_sale_price_cents,up.sale_price_cents AS unit_sale_price_cents,
+      COALESCE(up.sale_price_cents,p.default_sale_price_cents) AS base_price_cents,
+      GREATEST(p.updated_at,COALESCE(up.updated_at,p.updated_at)) AS updated_at,
+      COALESCE(array_agg(b.barcode) FILTER(WHERE b.barcode IS NOT NULL),'{}') AS barcodes
+      FROM products p LEFT JOIN unit_products up ON up.product_id=p.id AND up.unit_id=$1
       LEFT JOIN product_barcodes b ON b.product_id=p.id
-      WHERE up.unit_id=$1 AND up.active=true AND p.active=true
-      GROUP BY p.id,up.unit_id,up.product_id,up.sale_price_cents,up.updated_at ORDER BY p.id`,[req.register.unit_id]);
-    res.json({unitId:req.register.unit_id,registerId:req.register.id,generatedAt:new Date().toISOString(),products:rows});
+      WHERE p.active=true AND (up.active IS NULL OR up.active=true)
+        AND COALESCE(up.sale_price_cents,p.default_sale_price_cents) IS NOT NULL
+      GROUP BY p.id,up.sale_price_cents,up.updated_at ORDER BY p.id`,[req.register.unit_id]);
+    const promotions=await promotionsForUnit(req.register.unit_id);
+    const at=new Date();
+    const products=rows.map(p=>{
+      const selected=pickPromotion(promotions,p.id,at);
+      const quote=quotePrice(Number(p.base_price_cents),selected);
+      return {...p,sale_price_cents:quote.totalCents,price_source:selected?'PROMOTION':p.unit_sale_price_cents!=null?'UNIT':'DEFAULT',promotion_id:selected?.id||null};
+    });
+    res.json({unitId:req.register.unit_id,registerId:req.register.id,generatedAt:at.toISOString(),timeZone:'America/Sao_Paulo',products,promotions});
   }catch(e){next(e);}
 });
 app.get('/api/v1/config',requireRegister,async(req,res,next)=>{
@@ -236,9 +313,11 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
     let itemTotal=0,paymentTotal=0;
     for(const item of b.items){
       if(!text(item.description,250)||!Number.isFinite(item.quantity)||item.quantity<=0||
-        !/^\d+(\.\d{1,3})?$/.test(String(item.quantity))||!cent(item.unitPriceCents)||!cent(item.totalCents)) throw failure('INVALID_ITEM');
-      if(Math.round(item.quantity*item.unitPriceCents)!==item.totalCents) throw failure('ITEM_TOTAL_MISMATCH');
+        !/^\d+(\.\d{1,3})?$/.test(String(item.quantity))||!cent(item.unitPriceCents)||!cent(item.totalCents)||
+        (item.discountCents!=null&&!cent(item.discountCents))) throw failure('INVALID_ITEM');
+      if(Math.round(item.quantity*item.unitPriceCents)-(item.discountCents||0)!==item.totalCents) throw failure('ITEM_TOTAL_MISMATCH');
       if(item.productId!=null&&!positiveId(item.productId)) throw failure('INVALID_PRODUCT');
+      if(item.promotionId!=null&&!positiveId(item.promotionId)) throw failure('INVALID_PROMOTION');
       itemTotal+=item.totalCents;
     }
     for(const payment of b.payments){
@@ -267,9 +346,9 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
           WHERE up.unit_id=$1 AND up.product_id=$2`,[req.register.unit_id,item.productId]);
         if(!product.rows.length) throw failure('PRODUCT_NOT_IN_UNIT');
       }
-      await client.query(`INSERT INTO sale_items(sale_id,line_number,product_id,barcode,description,quantity,unit_price_cents,total_cents)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[saleId,i+1,item.productId||null,text(item.barcode,80)||null,
-        text(item.description,250),item.quantity,item.unitPriceCents,item.totalCents]);
+      await client.query(`INSERT INTO sale_items(sale_id,line_number,product_id,barcode,description,quantity,unit_price_cents,total_cents,discount_cents,promotion_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[saleId,i+1,item.productId||null,text(item.barcode,80)||null,
+        text(item.description,250),item.quantity,item.unitPriceCents,item.totalCents,item.discountCents||0,item.promotionId||null]);
     }
     for(let i=0;i<b.payments.length;i++){
       const p=b.payments[i];
