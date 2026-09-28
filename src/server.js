@@ -348,6 +348,8 @@ app.post('/api/admin/saurus-sales/import',requireGoogle,admin,async(req,res,next
     for(const record of req.body.sales){
       let s;
       try{s=normalizeSaurusSale(record);}catch(e){throw failure(e.message);}
+      await client.query(`INSERT INTO saurus_register_mappings(external_store_id,external_register_number)
+        VALUES($1,$2) ON CONFLICT DO NOTHING`,[s.storeId,s.registerNumber]);
       const mapping=(await client.query(`SELECT unit_id,register_id FROM saurus_register_mappings
         WHERE external_store_id=$1 AND external_register_number=$2`,[s.storeId,s.registerNumber])).rows[0];
       const old=(await client.query(`SELECT id FROM sales WHERE source='SAURUS' AND external_sale_id=$1`,[s.externalId])).rows[0];

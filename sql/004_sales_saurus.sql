@@ -1,4 +1,4 @@
--- Extensão aditiva para vendas históricas da Saurus e detalhamento das vendas do PDV.
+-- Campos inspirados no formato Saurus para futuras vendas recebidas pelo portal.
 -- Não altera o contrato de POST /api/v1/sales nem recria vendas já registradas.
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'POS';
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS external_sale_id text;
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS sale_tef (
   PRIMARY KEY(sale_id,line_number)
 );
 
--- O número do caixa na Saurus não é, por si só, a sigla da unidade Facinho.
+-- Um identificador externo não implica uma unidade ou um caixa local.
 CREATE TABLE IF NOT EXISTS saurus_register_mappings (
   external_store_id text NOT NULL,
   external_register_number text NOT NULL,
@@ -56,7 +56,3 @@ CREATE TABLE IF NOT EXISTS saurus_register_mappings (
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY(external_store_id,external_register_number)
 );
-INSERT INTO saurus_register_mappings(external_store_id,external_register_number) VALUES
-  ('3','3'),('6','6'),('6','7'),('6','8'),('6','9'),('6','10'),('6','11'),
-  ('6','12'),('6','13'),('6','14'),('6','15'),('6','16'),('6','17'),('6','18'),('6','19')
-ON CONFLICT DO NOTHING;
