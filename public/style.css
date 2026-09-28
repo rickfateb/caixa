@@ -8,3 +8,9 @@
 .sale-dialog .heading{align-items:flex-start}.sale-dialog .heading p{color:#6a766d;font-size:13px}
 .sale-tabs{margin:12px 0;flex-wrap:wrap}.sale-tabs button.selected{background:#234832;color:white}
 #mappings-list select{min-width:155px;margin:0;padding:7px;font-size:12px}
+.settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0 16px;margin:12px 0}
+#settings fieldset{border:1px solid #dce4da;border-radius:10px;margin:12px 0}
+#settings fieldset label{display:inline-block;margin-right:18px}
+#settings input[type=checkbox]{width:auto;margin:0 5px}
+#settings input[type=color]{height:44px;padding:4px}
+#settings details{margin:18px 0}.media-thumb{width:50px;height:50px;object-fit:cover;border-radius:7px}

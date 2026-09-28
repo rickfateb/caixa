@@ -22,12 +22,30 @@ const positiveId = value => /^\d+$/.test(String(value)) && Number(value) > 0;
 const cent = value => Number.isSafeInteger(value) && value >= 0;
 const failure = (code, status = 400) => Object.assign(new Error(code), { status });
 const text = (value, max = 250) => typeof value === 'string' ? value.trim().slice(0, max) : '';
+function imageUrl(value, required = false) {
+  if ((value == null || value === '') && !required) return null;
+  if (typeof value !== 'string' || value.length > 2048) throw failure('INVALID_IMAGE_URL');
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) throw Error();
+    return url.href;
+  } catch { throw failure('INVALID_IMAGE_URL'); }
+}
+const optionalUrl = value => value == null || value === '' ? null : imageUrl(value, true);
+function productImages(value) {
+  if (!Array.isArray(value) || value.length > 8) throw failure('INVALID_PRODUCT_IMAGES');
+  return value.map((item, index) => ({
+    image_url: imageUrl(item?.imageUrl, true), alt_text: text(item?.altText, 150),
+    sort_order: index, active: item?.active !== false
+  }));
+}
 
 async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/001_initial.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/002_promotions.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/003_units.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/004_sales_saurus.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/005_media_pos.sql'), 'utf8'));
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);
 }
@@ -93,7 +111,9 @@ app.get('/api/admin/products', requireGoogle, async (req, res, next) => {
     const limit = Math.min(Math.max(Number(req.query.limit)||50,1),200);
     const offset = Math.min(Math.max(Number(req.query.offset)||0,0),100000);
     const query = text(req.query.q,120);
-    const { rows } = await pool.query(`SELECT p.*,COALESCE(array_agg(b.barcode) FILTER(WHERE b.barcode IS NOT NULL),'{}') AS barcodes
+    const { rows } = await pool.query(`SELECT p.*,COALESCE(array_agg(b.barcode) FILTER(WHERE b.barcode IS NOT NULL),'{}') AS barcodes,
+      COALESCE((SELECT json_agg(json_build_object('id',i.id,'imageUrl',i.image_url,'altText',i.alt_text,'sortOrder',i.sort_order,'active',i.active) ORDER BY i.sort_order,i.id)
+        FROM product_images i WHERE i.product_id=p.id),'[]'::json) AS images
       FROM products p LEFT JOIN product_barcodes b ON b.product_id=p.id
       WHERE $1='' OR p.description ILIKE '%'||$1||'%' OR p.code ILIKE '%'||$1||'%' OR b.barcode=$1
       GROUP BY p.id ORDER BY p.description LIMIT $2 OFFSET $3`,[query,limit,offset]);
@@ -111,6 +131,7 @@ async function saveProduct(req, res, next) {
     if (b.purchaseCostCents != null && !cent(b.purchaseCostCents)) throw failure('INVALID_COST');
     if (b.costCents != null && !cent(b.costCents)) throw failure('INVALID_COST');
     if (!Array.isArray(b.barcodes) || b.barcodes.length > 20) throw failure('INVALID_BARCODES');
+    const images = b.images === undefined ? null : productImages(b.images);
     const codes = [...new Set(b.barcodes.map(v=>text(v,80)).filter(Boolean))];
     await client.query('BEGIN');
     let result;
@@ -130,13 +151,78 @@ async function saveProduct(req, res, next) {
         VALUES(${values.map((_,i)=>'$'+(i+1)).join(',')}) RETURNING *`,values);
     }
     for (const code of codes) await client.query('INSERT INTO product_barcodes(barcode,product_id) VALUES($1,$2)',[code,result.rows[0].id]);
+    if (images !== null) {
+      await client.query('DELETE FROM product_images WHERE product_id=$1',[result.rows[0].id]);
+      for (const image of images) await client.query(`INSERT INTO product_images(product_id,image_url,alt_text,sort_order,active)
+        VALUES($1,$2,$3,$4,$5)`,[result.rows[0].id,image.image_url,image.alt_text,image.sort_order,image.active]);
+    }
     await audit(client,req.user.email,b.id?'UPDATE':'CREATE','products',result.rows[0].id);
-    await client.query('COMMIT');res.status(b.id?200:201).json({...result.rows[0],barcodes:codes});
+    await client.query('COMMIT');res.status(b.id?200:201).json({...result.rows[0],barcodes:codes,images:images??[]});
   } catch(e) { if(client) await client.query('ROLLBACK').catch(()=>{});next(e); }
   finally { client?.release(); }
 }
 app.post('/api/admin/products',requireGoogle,admin,saveProduct);
 app.put('/api/admin/products/:id',requireGoogle,admin,(req,res,next)=>{req.body.id=req.params.id;saveProduct(req,res,next);});
+
+app.get('/api/admin/categories',requireGoogle,async(_req,res,next)=>{
+  try { res.json((await pool.query('SELECT * FROM categories ORDER BY sort_order,name')).rows); }
+  catch(e){next(e);}
+});
+async function saveCategory(req,res,next) {
+  try {
+    const b=req.body;
+    if(!text(b.name,120)||!Number.isInteger(b.sortOrder)||Math.abs(b.sortOrder)>100000) throw failure('INVALID_CATEGORY');
+    const url=optionalUrl(b.imageUrl);
+    let result;
+    if(b.id){
+      if(!positiveId(b.id)) throw failure('INVALID_ID');
+      result=await pool.query(`UPDATE categories SET name=$2,image_url=$3,sort_order=$4,active=$5,updated_at=now()
+        WHERE id=$1 RETURNING *`,[b.id,text(b.name,120),url,b.sortOrder,b.active!==false]);
+      if(!result.rows.length) throw failure('NOT_FOUND',404);
+    } else result=await pool.query(`INSERT INTO categories(name,image_url,sort_order,active)
+      VALUES($1,$2,$3,$4) RETURNING *`,[text(b.name,120),url,b.sortOrder,b.active!==false]);
+    await audit(pool,req.user.email,b.id?'UPDATE':'CREATE','categories',result.rows[0].id);
+    res.status(b.id?200:201).json(result.rows[0]);
+  }catch(e){next(e);}
+}
+app.post('/api/admin/categories',requireGoogle,admin,saveCategory);
+app.put('/api/admin/categories/:id',requireGoogle,admin,(req,res,next)=>{req.body.id=req.params.id;saveCategory(req,res,next);});
+
+const bannersSql=`SELECT b.*,COALESCE((SELECT array_agg(unit_id ORDER BY unit_id)
+  FROM banner_units WHERE banner_id=b.id),'{}') AS unit_ids FROM banners b`;
+app.get('/api/admin/banners',requireGoogle,async(_req,res,next)=>{
+  try {res.json((await pool.query(`${bannersSql} ORDER BY b.sort_order,b.id`)).rows);}catch(e){next(e);}
+});
+async function saveBanner(req,res,next) {
+  let client;
+  try {
+    const b=req.body;
+    if(!text(b.title,120)||!Number.isInteger(b.sortOrder)||Math.abs(b.sortOrder)>100000||
+      !Array.isArray(b.unitIds)||b.unitIds.length>100||!b.unitIds.every(positiveId)||
+      new Set(b.unitIds.map(String)).size!==b.unitIds.length) throw failure('INVALID_BANNER');
+    const url=imageUrl(b.imageUrl,true),target=optionalUrl(b.targetUrl);
+    const starts=b.startsAt?new Date(b.startsAt):null,ends=b.endsAt?new Date(b.endsAt):null;
+    if((starts&&!Number.isFinite(starts.getTime()))||(ends&&!Number.isFinite(ends.getTime()))||
+      (starts&&ends&&ends<=starts)) throw failure('INVALID_PERIOD');
+    client=await pool.connect();await client.query('BEGIN');
+    let result;
+    const args=[text(b.title,120),url,target,b.sortOrder,starts?.toISOString()||null,ends?.toISOString()||null,b.active!==false];
+    if(b.id){
+      if(!positiveId(b.id)) throw failure('INVALID_ID');
+      result=await client.query(`UPDATE banners SET title=$2,image_url=$3,target_url=$4,sort_order=$5,
+        starts_at=$6,ends_at=$7,active=$8,updated_at=now() WHERE id=$1 RETURNING *`,[b.id,...args]);
+      if(!result.rows.length) throw failure('NOT_FOUND',404);
+      await client.query('DELETE FROM banner_units WHERE banner_id=$1',[b.id]);
+    }else result=await client.query(`INSERT INTO banners(title,image_url,target_url,sort_order,starts_at,ends_at,active)
+      VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,args);
+    for(const id of b.unitIds) await client.query('INSERT INTO banner_units(banner_id,unit_id) VALUES($1,$2)',[result.rows[0].id,id]);
+    await audit(client,req.user.email,b.id?'UPDATE':'CREATE','banners',result.rows[0].id);
+    await client.query('COMMIT');res.status(b.id?200:201).json({...result.rows[0],unit_ids:b.unitIds});
+  }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}
+  finally{client?.release();}
+}
+app.post('/api/admin/banners',requireGoogle,admin,saveBanner);
+app.put('/api/admin/banners/:id',requireGoogle,admin,(req,res,next)=>{req.body.id=req.params.id;saveBanner(req,res,next);});
 
 app.get('/api/admin/unit-products/:unitId',requireGoogle,async(req,res,next)=>{
   try {
@@ -223,11 +309,37 @@ app.get('/api/admin/settings/:unitId',requireGoogle,async(req,res,next)=>{
 app.put('/api/admin/settings/:unitId',requireGoogle,admin,async(req,res,next)=>{
   try {
     if(!positiveId(req.params.unitId)||!req.body.settings||Array.isArray(req.body.settings)||typeof req.body.settings!=='object') throw failure('INVALID_SETTINGS');
+    validateAppSettings(req.body.settings);
     const {rows}=await pool.query(`INSERT INTO unit_settings(unit_id,settings) VALUES($1,$2)
       ON CONFLICT(unit_id) DO UPDATE SET settings=excluded.settings,updated_at=now() RETURNING *`,[req.params.unitId,JSON.stringify(req.body.settings)]);
     await audit(pool,req.user.email,'UPSERT','unit_settings',req.params.unitId);res.json(rows[0]);
   }catch(e){next(e);}
 });
+function validateAppSettings(settings) {
+  const sync=settings.syncIntervalSeconds;
+  if(sync!==undefined&&(!Number.isInteger(sync)||sync<60||sync>86400)) throw failure('INVALID_SYNC_INTERVAL');
+  const theme=settings.theme;
+  if(theme!==undefined&&(!theme||typeof theme!=='object'||Array.isArray(theme)||
+    !['primaryColor','accentColor','backgroundColor','textColor'].every(key=>theme[key]===undefined||
+      typeof theme[key]==='string'&&/^#[0-9a-fA-F]{6}$/.test(theme[key])))) throw failure('INVALID_THEME');
+  const media=settings.media;
+  if(media!==undefined){
+    if(!media||typeof media!=='object'||Array.isArray(media)) throw failure('INVALID_MEDIA');
+    for(const key of ['logoUrl','welcomeBackgroundUrl','homeBackgroundUrl','checkoutBackgroundUrl'])
+      if(media[key]!==undefined) optionalUrl(media[key]);
+  }
+  if(settings.paymentMethods!==undefined&&(!Array.isArray(settings.paymentMethods)||
+    !settings.paymentMethods.length||new Set(settings.paymentMethods).size!==settings.paymentMethods.length||
+    !settings.paymentMethods.every(method=>['PIX','CREDIT','DEBIT'].includes(method)))) throw failure('INVALID_PAYMENT_METHODS');
+}
+function appSettings(settings) {
+  return {
+    syncIntervalSeconds:settings.syncIntervalSeconds??300,
+    theme:{primaryColor:'#086B3A',accentColor:'#22B36D',backgroundColor:'#EAFAF8',textColor:'#173C31',...settings.theme},
+    media:{logoUrl:null,welcomeBackgroundUrl:null,homeBackgroundUrl:null,checkoutBackgroundUrl:null,...settings.media},
+    paymentMethods:settings.paymentMethods??['PIX','CREDIT','DEBIT']
+  };
+}
 app.get('/api/admin/registers',requireGoogle,async(_req,res,next)=>{
   try{res.json((await pool.query('SELECT id,unit_id,name,external_number,active,created_at FROM registers ORDER BY unit_id,name')).rows);}catch(e){next(e);}
 });
@@ -292,12 +404,12 @@ app.get('/api/admin/sales/:id',requireGoogle,async(req,res,next)=>{
       pool.query(`SELECT line_number,external_item_id,external_product_id,product_id,product_code,barcode,
         description,unit_of_measure,quantity,unit_price_cents,source_unit_price,total_cents,discount_cents,promotion_id
         FROM sale_items WHERE sale_id=$1 ORDER BY line_number`,[req.params.id]),
-      pool.query(`SELECT line_number,external_payment_id,method,amount_cents,provider_reference
+      pool.query(`SELECT line_number,external_payment_id,method,amount_cents,provider_reference,simulated
         FROM sale_payments WHERE sale_id=$1 ORDER BY line_number`,[req.params.id]),
       pool.query(`SELECT line_number,external_id,external_payment_id,due_date,amount_cents,paid_cents,status
         FROM sale_installments WHERE sale_id=$1 ORDER BY line_number`,[req.params.id]),
       pool.query(`SELECT line_number,external_id,external_payment_id,transaction_id,authorization_code,
-        nsu,control_code,status,transaction_type,occurred_at FROM sale_tef WHERE sale_id=$1 ORDER BY line_number`,[req.params.id])
+        nsu,control_code,status,transaction_type,occurred_at,simulated FROM sale_tef WHERE sale_id=$1 ORDER BY line_number`,[req.params.id])
     ]);
     res.json({...sale,items:items.rows,payments:payments.rows,installments:installments.rows,tef:tef.rows});
   }catch(e){next(e);}
@@ -413,6 +525,8 @@ app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
       p.default_sale_price_cents,up.sale_price_cents AS unit_sale_price_cents,
       COALESCE(up.sale_price_cents,p.default_sale_price_cents) AS base_price_cents,
       GREATEST(p.updated_at,COALESCE(up.updated_at,p.updated_at)) AS updated_at,
+      COALESCE((SELECT json_agg(json_build_object('id',i.id,'imageUrl',i.image_url,'altText',i.alt_text,'sortOrder',i.sort_order)
+        ORDER BY i.sort_order,i.id) FROM product_images i WHERE i.product_id=p.id AND i.active=true),'[]'::json) AS images,
       COALESCE(array_agg(b.barcode) FILTER(WHERE b.barcode IS NOT NULL),'{}') AS barcodes
       FROM products p LEFT JOIN unit_products up ON up.product_id=p.id AND up.unit_id=$1
       LEFT JOIN product_barcodes b ON b.product_id=p.id
@@ -426,7 +540,19 @@ app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
       const quote=quotePrice(Number(p.base_price_cents),selected);
       return {...p,sale_price_cents:quote.totalCents,price_source:selected?'PROMOTION':p.unit_sale_price_cents!=null?'UNIT':'DEFAULT',promotion_id:selected?.id||null};
     });
-    res.json({unitId:req.register.unit_id,registerId:req.register.id,generatedAt:at.toISOString(),timeZone:'America/Sao_Paulo',products,promotions});
+    const categoryNames=[...new Set(products.map(p=>p.category).filter(Boolean))];
+    const categoryRows=categoryNames.length?(await pool.query(`SELECT id,name,image_url,sort_order FROM categories
+      WHERE active=true AND name=ANY($1::text[])`,[categoryNames])).rows:[];
+    const categoryByName=new Map(categoryRows.map(c=>[c.name,c]));
+    const categories=categoryNames.map(name=>categoryByName.get(name)||{id:null,name,image_url:null,sort_order:0})
+      .sort((a,b)=>a.sort_order-b.sort_order||a.name.localeCompare(b.name,'pt-BR'));
+    const banners=(await pool.query(`${bannersSql} WHERE b.active=true
+      AND (b.starts_at IS NULL OR b.starts_at<=now()) AND (b.ends_at IS NULL OR b.ends_at>now())
+      AND (NOT EXISTS(SELECT 1 FROM banner_units WHERE banner_id=b.id)
+        OR EXISTS(SELECT 1 FROM banner_units WHERE banner_id=b.id AND unit_id=$1))
+      ORDER BY b.sort_order,b.id`,[req.register.unit_id])).rows;
+    res.json({unitId:req.register.unit_id,registerId:req.register.id,generatedAt:at.toISOString(),
+      timeZone:'America/Sao_Paulo',products,categories,banners,promotions});
   }catch(e){next(e);}
 });
 app.get('/api/v1/config',requireRegister,async(req,res,next)=>{
@@ -434,7 +560,8 @@ app.get('/api/v1/config',requireRegister,async(req,res,next)=>{
     const {rows}=await pool.query(`SELECT u.id,u.external_id,u.name,u.acronym,u.document,
       COALESCE(s.settings,'{}'::jsonb) AS settings,s.updated_at FROM units u
       LEFT JOIN unit_settings s ON s.unit_id=u.id WHERE u.id=$1`,[req.register.unit_id]);
-    res.json({unit:rows[0],register:{id:req.register.id,name:req.register.name}});
+    res.json({unit:rows[0],register:{id:req.register.id,name:req.register.name},
+      appConfig:appSettings(rows[0].settings),generatedAt:new Date().toISOString()});
   }catch(e){next(e);}
 });
 app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
@@ -445,7 +572,9 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
     if(!b||!text(b.clientSaleId,100)||!['APPROVED','CANCELLED'].includes(b.status)||
       !b.occurredAt||Number.isNaN(Date.parse(b.occurredAt))||!cent(b.totalCents)||
       !Array.isArray(b.items)||!b.items.length||b.items.length>200||
-      !Array.isArray(b.payments)||b.payments.length>20) throw failure('INVALID_SALE');
+      !Array.isArray(b.payments)||b.payments.length>20||
+      (b.installments!==undefined&&(!Array.isArray(b.installments)||b.installments.length>50))||
+      (b.tef!==undefined&&(!Array.isArray(b.tef)||b.tef.length>50))) throw failure('INVALID_SALE');
     const occurredAt=new Date(b.occurredAt).toISOString();
     if(Date.parse(occurredAt)>Date.now()+300000) throw failure('SALE_DATE_IN_FUTURE');
     let itemTotal=0,paymentTotal=0;
@@ -460,7 +589,35 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
     }
     for(const payment of b.payments){
       if(!text(payment.method,60)||!cent(payment.amountCents)) throw failure('INVALID_PAYMENT');
+      if(payment.simulated!==undefined&&typeof payment.simulated!=='boolean') throw failure('INVALID_PAYMENT');
+      if(payment.clientPaymentId!==undefined&&!text(payment.clientPaymentId,80)) throw failure('INVALID_PAYMENT');
       paymentTotal+=payment.amountCents;
+    }
+    const paymentIds=b.payments.map(p=>text(p.clientPaymentId,80)).filter(Boolean);
+    if(new Set(paymentIds).size!==paymentIds.length) throw failure('DUPLICATE_PAYMENT_ID');
+    const validPaymentLine=value=>Number.isInteger(value)&&value>=1&&value<=b.payments.length;
+    for(const installment of b.installments||[]){
+      if(!validPaymentLine(installment.paymentLineNumber)||!cent(installment.amountCents)||
+        !/^\d{4}-\d{2}-\d{2}$/.test(installment.dueDate)||
+        Number.isNaN(Date.parse(`${installment.dueDate}T00:00:00Z`))||
+        new Date(`${installment.dueDate}T00:00:00Z`).toISOString().slice(0,10)!==installment.dueDate||
+        b.payments[installment.paymentLineNumber-1].method!=='CREDIT'||
+        !text(b.payments[installment.paymentLineNumber-1].clientPaymentId,80)||
+        (installment.status!==undefined&&!text(installment.status,40))) throw failure('INVALID_INSTALLMENT');
+    }
+    for(let line=1;line<=b.payments.length;line++){
+      const parts=(b.installments||[]).filter(x=>x.paymentLineNumber===line);
+      if(parts.length&&parts.reduce((sum,x)=>sum+x.amountCents,0)!==b.payments[line-1].amountCents)
+        throw failure('INSTALLMENT_TOTAL_MISMATCH');
+    }
+    for(const entry of b.tef||[]){
+      if(!validPaymentLine(entry.paymentLineNumber)||entry.simulated!==true||
+        entry.status!=='SIMULATED'||!['PIX','CREDIT','DEBIT'].includes(entry.transactionType)||
+        b.payments[entry.paymentLineNumber-1].method!==entry.transactionType||
+        b.payments[entry.paymentLineNumber-1].simulated!==true||
+        !text(b.payments[entry.paymentLineNumber-1].clientPaymentId,80)||
+        entry.authorizationCode||entry.nsu||entry.controlCode||
+        (entry.occurredAt&&Number.isNaN(Date.parse(entry.occurredAt)))) throw failure('INVALID_SIMULATED_TEF');
     }
     if(itemTotal!==b.totalCents || (b.status==='APPROVED' && paymentTotal!==b.totalCents)) throw failure('SALE_TOTAL_MISMATCH');
     if(b.status==='CANCELLED' && paymentTotal!==0) throw failure('CANCELLED_PAYMENT_NOT_ZERO');
@@ -486,15 +643,36 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
           AND COALESCE(up.sale_price_cents,p.default_sale_price_cents) IS NOT NULL`,[req.register.unit_id,item.productId]);
         if(!product.rows.length) throw failure('PRODUCT_NOT_IN_UNIT');
       }
-      await client.query(`INSERT INTO sale_items(sale_id,line_number,product_id,barcode,description,quantity,unit_price_cents,total_cents,discount_cents,promotion_id)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[saleId,i+1,item.productId||null,text(item.barcode,80)||null,
-        text(item.description,250),item.quantity,item.unitPriceCents,item.totalCents,item.discountCents||0,item.promotionId||null]);
+      await client.query(`INSERT INTO sale_items(sale_id,line_number,external_item_id,external_product_id,product_id,
+        product_code,barcode,description,unit_of_measure,quantity,unit_price_cents,total_cents,discount_cents,promotion_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,[saleId,i+1,
+        text(item.clientLineId,80)||null,text(item.externalProductId,80)||null,item.productId||null,
+        text(item.productCode,80)||null,text(item.barcode,80)||null,text(item.description,250),
+        text(item.unitOfMeasure,30)||null,item.quantity,item.unitPriceCents,item.totalCents,
+        item.discountCents||0,item.promotionId||null]);
     }
     for(let i=0;i<b.payments.length;i++){
       const p=b.payments[i];
-      await client.query(`INSERT INTO sale_payments(sale_id,line_number,method,amount_cents,provider_reference,metadata)
-        VALUES($1,$2,$3,$4,$5,$6)`,[saleId,i+1,text(p.method,60),p.amountCents,text(p.providerReference,120)||null,
-        JSON.stringify(p.metadata && typeof p.metadata==='object'&&!Array.isArray(p.metadata)?p.metadata:{})]);
+      await client.query(`INSERT INTO sale_payments(sale_id,line_number,external_payment_id,method,amount_cents,provider_reference,metadata,simulated)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[saleId,i+1,text(p.clientPaymentId,80)||null,
+        text(p.method,60),p.amountCents,text(p.providerReference,120)||null,
+        JSON.stringify(p.metadata && typeof p.metadata==='object'&&!Array.isArray(p.metadata)?p.metadata:{}),p.simulated===true]);
+    }
+    for(let i=0;i<(b.installments||[]).length;i++){
+      const part=b.installments[i];
+      await client.query(`INSERT INTO sale_installments(sale_id,line_number,external_id,external_payment_id,due_date,amount_cents,paid_cents,status)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[saleId,i+1,text(part.clientInstallmentId,80)||null,
+        text(b.payments[part.paymentLineNumber-1].clientPaymentId,80)||null,part.dueDate,part.amountCents,0,
+        text(part.status,40)||'SIMULATED']);
+    }
+    for(let i=0;i<(b.tef||[]).length;i++){
+      const entry=b.tef[i];
+      await client.query(`INSERT INTO sale_tef(sale_id,line_number,external_id,external_payment_id,transaction_id,
+        status,transaction_type,occurred_at,simulated) VALUES($1,$2,$3,$4,$5,$6,$7,$8,true)`,
+        [saleId,i+1,text(entry.clientTransactionId,80)||null,
+          text(b.payments[entry.paymentLineNumber-1].clientPaymentId,80)||null,
+          text(entry.clientTransactionId,80)||null,'SIMULATED',entry.transactionType,
+          entry.occurredAt?new Date(entry.occurredAt).toISOString():occurredAt]);
     }
     await client.query('COMMIT');res.status(201).json({id:saleId,duplicate:false});
   }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}

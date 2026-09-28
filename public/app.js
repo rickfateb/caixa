@@ -3,7 +3,7 @@ const safe=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&l
 const brl=cents=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(cents||0)/100);
 const asCents=value=>Math.round(Number(String(value).replace(',','.'))*100);
 let token=sessionStorage.getItem('facinho_google_token')||'';
-let me=null,units=[],products=[],promotions=[],salesOffset=0;
+let me=null,units=[],products=[],categories=[],banners=[],promotions=[],salesOffset=0;
 const flash=(message,error=false)=>{const el=$('flash');el.textContent=message;el.className='flash'+(error?' error':'');el.hidden=false;setTimeout(()=>el.hidden=true,7000);};
 async function api(url,options={}){
   const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})}});
@@ -15,7 +15,9 @@ const send=(url,method,body)=>api(url,{method,body:JSON.stringify(body)});
 const table=(headers,rows)=>`<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${safe(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${headers.length}">Nenhum registro.</td></tr>`}</tbody></table></div>`;
 function selectUnits(){for(const id of ['price-unit','register-unit','settings-unit','sales-unit']){const el=$(id),old=el.value;el.innerHTML=(id==='sales-unit'?'<option value="">Todas</option>':'')+units.filter(u=>u.active).map(u=>`<option value="${u.id}">${safe(u.name)} (${safe(u.acronym)})</option>`).join('');if(units.some(u=>String(u.id)===old))el.value=old;}}
 async function loadUnits(){units=await api('/api/admin/units');selectUnits();$('units-list').innerHTML=table(['Sigla','Unidade','ID externo','Status',''],units.map(u=>`<tr><td>${safe(u.acronym)}</td><td>${safe(u.name)}</td><td>${safe(u.external_id)}</td><td>${u.active?'Ativa':'Inativa'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-unit="${u.id}">Editar</button>`:''}</td></tr>`));}
-async function loadProducts(){const q=encodeURIComponent($('product-search').value);products=await api(`/api/admin/products?limit=200&q=${q}`);$('products-list').innerHTML=table(['Código','Produto','Categoria','Preço padrão','EAN','Status',''],products.map(p=>`<tr><td>${safe(p.code)}</td><td>${safe(p.description)}</td><td>${safe(p.category)}</td><td>${p.default_sale_price_cents==null?'—':brl(p.default_sale_price_cents)}</td><td>${safe((p.barcodes||[]).join(', '))}</td><td>${p.active?'Ativo':'Inativo'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-product="${p.id}">Editar</button>`:''}</td></tr>`));$('price-product').innerHTML=products.map(p=>`<option value="${p.id}">${safe(p.description)}</option>`).join('');}
+async function loadProducts(){const q=encodeURIComponent($('product-search').value);products=await api(`/api/admin/products?limit=200&q=${q}`);$('products-list').innerHTML=table(['Código','Produto','Categoria','Fotos','Preço padrão','EAN','Status',''],products.map(p=>`<tr><td>${safe(p.code)}</td><td>${safe(p.description)}</td><td>${safe(p.category)}</td><td>${p.images?.length||0}</td><td>${p.default_sale_price_cents==null?'—':brl(p.default_sale_price_cents)}</td><td>${safe((p.barcodes||[]).join(', '))}</td><td>${p.active?'Ativo':'Inativo'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-product="${p.id}">Editar</button>`:''}</td></tr>`));$('price-product').innerHTML=products.map(p=>`<option value="${p.id}">${safe(p.description)}</option>`).join('');}
+async function loadCategories(){categories=await api('/api/admin/categories');$('categories-list').innerHTML=table(['Nome','Imagem','Ordem','Ativa',''],categories.map(c=>`<tr><td>${safe(c.name)}</td><td>${c.image_url?`<img class="media-thumb" src="${safe(c.image_url)}" alt="">`:'—'}</td><td>${c.sort_order}</td><td>${c.active?'Sim':'Não'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-category="${c.id}">Editar</button>`:''}</td></tr>`));}
+async function loadBanners(){banners=await api('/api/admin/banners');$('banners-list').innerHTML=table(['Título','Imagem','Unidades','Vigência','Ativo',''],banners.map(b=>`<tr><td>${safe(b.title)}</td><td><img class="media-thumb" src="${safe(b.image_url)}" alt=""></td><td>${b.unit_ids.length?b.unit_ids.map(id=>safe(units.find(u=>String(u.id)===String(id))?.acronym||id)).join(', '):'Todas'}</td><td>${safe(localDate(b.starts_at))||'Sem início'} a ${safe(localDate(b.ends_at))||'Sem fim'}</td><td>${b.active?'Sim':'Não'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-banner="${b.id}">Editar</button>`:''}</td></tr>`));}
 async function loadPrices(){const unit=$('price-unit').value;if(!unit)return;$('prices-list').innerHTML=table(['Produto','Código','Categoria','Preço','Ativo',''],(await api(`/api/admin/unit-products/${unit}`)).map(p=>`<tr><td>${safe(p.description)}</td><td>${safe(p.code)}</td><td>${safe(p.category)}</td><td>${brl(p.sale_price_cents)}</td><td>${p.active?'Sim':'Não'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-remove-price="${p.product_id}">Remover preço específico</button>`:''}</td></tr>`));}
 const localDate=value=>value?new Date(value).toLocaleString('sv-SE',{timeZone:'America/Sao_Paulo'}).replace(' ','T').slice(0,16):'';
 async function loadPromotions(){promotions=await api('/api/admin/promotions');$('promotions-list').innerHTML=table(['Nome','Regra','Abrangência','Vigência (Brasília)','Status',''],promotions.map(p=>`<tr><td>${safe(p.name)}</td><td>${safe(({PRICE:'Preço temporário',PERCENT:'Desconto',BUY_N_PAY_M:'Compre e pague',SECOND_UNIT_PRICE:'2ª unidade por preço fixo'})[p.type])}</td><td>${p.scope==='ALL'?'Todos os produtos':`${p.product_ids.length} produto(s)`} · ${p.unit_ids.length?`${p.unit_ids.length} unidade(s)`:'Todas as unidades'}</td><td>${safe(localDate(p.starts_at))} a ${safe(localDate(p.ends_at))}${p.weekdays?' · semanal':''}</td><td>${p.active?'Ativa':'Inativa'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-promotion="${p.id}">Editar</button>`:''}</td></tr>`));}
@@ -26,7 +28,12 @@ function showRegisterToken(data){
   result.hidden=false;
   result.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
-async function loadSettings(){const unit=$('settings-unit').value;if(unit)$('settings-value').value=JSON.stringify((await api(`/api/admin/settings/${unit}`)).settings,null,2);}
+async function loadSettings(){const unit=$('settings-unit').value;if(!unit)return;const settings=(await api(`/api/admin/settings/${unit}`)).settings;$('settings-value').value=JSON.stringify(settings,null,2);
+  $('settings-sync').value=settings.syncIntervalSeconds??300;
+  for(const [key,id,fallback] of [['primaryColor','primary','#086B3A'],['accentColor','accent','#22B36D'],['backgroundColor','background','#EAFAF8'],['textColor','text','#173C31']])$(`settings-${id}`).value=settings.theme?.[key]??fallback;
+  for(const [key,id] of [['logoUrl','logo'],['welcomeBackgroundUrl','welcome'],['homeBackgroundUrl','home'],['checkoutBackgroundUrl','checkout']])$(`settings-${id}`).value=settings.media?.[key]??'';
+  for(const [method,id] of [['PIX','pix'],['CREDIT','credit'],['DEBIT','debit']])$(`settings-${id}`).checked=(settings.paymentMethods??['PIX','CREDIT','DEBIT']).includes(method);
+}
 async function loadSales(more=false){
   if(!more)salesOffset=0;
   const params=new URLSearchParams({offset:String(salesOffset),source:$('sales-source').value,
@@ -43,9 +50,9 @@ async function showSaleDetail(id){
   const headings={items:'Itens',payments:'Pagamentos',installments:'Parcelas',tef:'TEF'};
   const sections={
     items:table(['#','Produto','ID de origem','Código','Quantidade','Medida','Unitário','Desconto','Total'],s.items.map(i=>`<tr><td>${i.line_number}</td><td>${safe(i.description)}</td><td>${safe(i.external_product_id||i.product_id)}</td><td>${safe(i.product_code||i.barcode)}</td><td>${safe(i.quantity)}</td><td>${safe(i.unit_of_measure)}</td><td>${brl(i.unit_price_cents)}</td><td>${brl(i.discount_cents)}</td><td>${brl(i.total_cents)}</td></tr>`)),
-    payments:table(['#','Forma','ID de origem','Valor','Referência'],s.payments.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.method)}</td><td>${safe(p.external_payment_id)}</td><td>${brl(p.amount_cents)}</td><td>${safe(p.provider_reference)}</td></tr>`)),
+    payments:table(['#','Forma','ID de origem','Valor','Referência','Modo'],s.payments.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.method)}</td><td>${safe(p.external_payment_id)}</td><td>${brl(p.amount_cents)}</td><td>${safe(p.provider_reference)}</td><td>${p.simulated?'Simulado':'Registrado'}</td></tr>`)),
     installments:table(['#','ID de origem','Pagamento','Vencimento','Valor','Pago','Status'],s.installments.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.external_id)}</td><td>${safe(p.external_payment_id)}</td><td>${p.due_date?new Date(p.due_date).toLocaleDateString('pt-BR',{timeZone:'UTC'}):'—'}</td><td>${p.amount_cents==null?'—':brl(p.amount_cents)}</td><td>${p.paid_cents==null?'—':brl(p.paid_cents)}</td><td>${safe(p.status)}</td></tr>`)),
-    tef:table(['#','ID de origem','Pagamento','NSU','Autorização','Controle','Tipo','Status'],s.tef.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.external_id)}</td><td>${safe(p.external_payment_id)}</td><td>${safe(p.nsu)}</td><td>${safe(p.authorization_code)}</td><td>${safe(p.control_code)}</td><td>${safe(p.transaction_type)}</td><td>${safe(p.status)}</td></tr>`))
+    tef:table(['#','ID de origem','Pagamento','NSU','Autorização','Controle','Tipo','Status'],s.tef.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.external_id)}</td><td>${safe(p.external_payment_id)}</td><td>${safe(p.nsu)}</td><td>${safe(p.authorization_code)}</td><td>${safe(p.control_code)}</td><td>${safe(p.transaction_type)}</td><td>${p.simulated?'Simulado · ':''}${safe(p.status)}</td></tr>`))
   };
   d.innerHTML=`<div class="heading"><div><h2>Venda ${safe(s.external_sale_id||s.client_sale_id)}</h2><p>${s.source==='SAURUS'?'Saurus':'Portal Caixa'} · ${safe(s.unit_name||'Unidade a vincular')} · Caixa ${safe(s.register_name||s.external_register_number||'—')} · ${new Date(s.occurred_at).toLocaleString('pt-BR')} · ${brl(s.total_cents)}</p></div><button class="secondary" data-close>Fechar</button></div><nav class="sale-tabs">${Object.entries(headings).map(([key,label])=>`<button data-sale-tab="${key}" class="${key==='items'?'selected':''}">${label} (${s[key].length})</button>`).join('')}</nav><div class="sale-detail-content">${sections.items}</div>`;
   d.querySelector('[data-close]').onclick=()=>d.close();
@@ -62,21 +69,46 @@ async function loadMappings(){
   $('mappings-list').onchange=e=>{if(!e.target.matches('[data-map-unit]'))return;
     const row=e.target.closest('tr');row.querySelector('[data-map-target]').innerHTML=registerOptions(e.target.value,null);};
 }
-async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sales:()=>loadSales(),['saurus-mappings']:loadMappings}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
+async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,categories:loadCategories,banners:loadBanners,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sales:()=>loadSales(),['saurus-mappings']:loadMappings}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
 function editor(kind,item={}){
   const fields=kind==='unit'?[['name','Nome da unidade'],['acronym','Sigla'],['externalId','ID da unidade no cadastro atual'],['document','Documento']]:[
     ['description','Descrição'],['code','Código do produto'],['externalId','ID no cadastro atual'],['barcodes','Códigos de barras separados por vírgula'],
     ['category','Categoria'],['subcategory','Subcategoria'],['brand','Marca'],['unitOfMeasure','Medida'],['ncm','NCM'],
     ['status','Status'],['itemType','Tipo do item'],['registeredDescription','Descrição registrada'],
     ['purchaseCostCents','Compra (R$)'],['costCents','Custo (R$)'],['defaultPriceCents','Preço de venda padrão (R$)']];
-  const d=document.createElement('dialog');d.innerHTML=`<h2>${item.id?'Editar':'Novo'} ${kind==='unit'?'unidade':'produto'}</h2><form method="dialog"><div class="grid">${fields.map(([key,label])=>`<label>${safe(label)}<input name="${key}" autocomplete="off"></label>`).join('')}</div><label><input name="active" type="checkbox" style="width:auto" checked> Ativo</label><menu><button type="button" class="secondary" data-close>Cancelar</button><button type="submit">Salvar</button></menu></form>`;
+  const d=document.createElement('dialog');d.innerHTML=`<h2>${item.id?'Editar':'Novo'} ${kind==='unit'?'unidade':'produto'}</h2><form method="dialog"><div class="grid">${fields.map(([key,label])=>`<label>${safe(label)}<input name="${key}" autocomplete="off"></label>`).join('')}</div>${kind==='product'?'<label>Fotos do produto: URLs HTTPS, uma por linha (até 8)<textarea name="imageUrls" rows="4" placeholder="https://..."></textarea></label>':''}<label><input name="active" type="checkbox" style="width:auto" checked> Ativo</label><menu><button type="button" class="secondary" data-close>Cancelar</button><button type="submit">Salvar</button></menu></form>`;
   document.body.append(d);d.querySelector('[data-close]').onclick=()=>d.close();
   for(const [key] of fields){const el=d.querySelector(`[name="${key}"]`);let val=key==='defaultPriceCents'?item.default_sale_price_cents:item[key]??item[key.replace(/[A-Z]/g,m=>'_'+m.toLowerCase())]??'';if(key==='barcodes')val=(item.barcodes||[]).join(', ');if(key.endsWith('Cents'))val=val==null||val===''?'':Number(val)/100;el.value=val??'';}
   d.querySelector('[name="active"]').checked=item.active!==false;
+  if(kind==='product')d.querySelector('[name="imageUrls"]').value=(item.images||[]).map(image=>image.imageUrl).join('\n');
   d.querySelector('form').addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.target);const body=Object.fromEntries(fields.map(([key])=>[key,String(f.get(key)||'').trim()]));body.active=!!f.get('active');
-    if(kind==='product'){body.barcodes=body.barcodes.split(',').map(v=>v.trim()).filter(Boolean);for(const k of ['purchaseCostCents','costCents','defaultPriceCents'])body[k]=body[k]===''?null:asCents(body[k]);}
+    if(kind==='product'){body.barcodes=body.barcodes.split(',').map(v=>v.trim()).filter(Boolean);body.images=String(f.get('imageUrls')||'').split('\n').map(v=>v.trim()).filter(Boolean).map(imageUrl=>({imageUrl,altText:body.description}));for(const k of ['purchaseCostCents','costCents','defaultPriceCents'])body[k]=body[k]===''?null:asCents(body[k]);}
     try{await send(kind==='unit'?(item.id?`/api/admin/units/${item.id}`:'/api/admin/units'):(item.id?`/api/admin/products/${item.id}`:'/api/admin/products'),item.id?(kind==='unit'?'PATCH':'PUT'):'POST',body);d.close();flash('Cadastro salvo.');await(kind==='unit'?loadUnits():loadProducts());}catch(err){alert(err.message);}});
   d.addEventListener('close',()=>d.remove());d.showModal();
+}
+function mediaEditor(kind,item={}){
+  const isBanner=kind==='banner',d=document.createElement('dialog');d.className='promotion-dialog';
+  d.innerHTML=`<h2>${item.id?'Editar':'Nova'} ${isBanner?'banner':'categoria'}</h2><form>
+    <label>${isBanner?'Título':'Nome (igual à categoria no produto)'}<input name="name" maxlength="120" required value="${safe(isBanner?item.title:item.name)}"></label>
+    <label>Imagem (URL HTTPS) <input name="imageUrl" type="url" ${isBanner?'required':''} value="${safe(item.image_url)}" placeholder="https://..."></label>
+    ${isBanner?`<label>Destino ao tocar (URL HTTPS, opcional)<input name="targetUrl" type="url" value="${safe(item.target_url)}"></label>
+      <div class="grid"><label>Início (Brasília)<input name="startsAt" type="datetime-local" value="${safe(localDate(item.starts_at))}"></label>
+      <label>Fim (Brasília)<input name="endsAt" type="datetime-local" value="${safe(localDate(item.ends_at))}"></label></div>
+      <fieldset><legend>Unidades</legend><p>Sem seleção: todas as unidades.</p><div class="checks">${units.filter(u=>u.active).map(u=>`<label><input type="checkbox" name="unitId" value="${u.id}" ${(item.unit_ids||[]).map(String).includes(String(u.id))?'checked':''}> ${safe(u.name)}</label>`).join('')}</div></fieldset>`:''}
+    <label>Ordem de exibição<input name="sortOrder" type="number" min="-100000" max="100000" value="${item.sort_order??0}"></label>
+    <label><input type="checkbox" name="active" ${item.active!==false?'checked':''}> Ativo</label>
+    <menu><button type="button" class="secondary" data-close>Cancelar</button><button type="submit">Salvar</button></menu></form>`;
+  document.body.append(d);d.querySelector('[data-close]').onclick=()=>d.close();
+  d.querySelector('form').addEventListener('submit',async e=>{e.preventDefault();const f=e.target.elements;
+    const body={imageUrl:f.imageUrl.value.trim(),sortOrder:Number(f.sortOrder.value),active:f.active.checked};
+    if(isBanner){body.title=f.name.value.trim();body.targetUrl=f.targetUrl.value.trim()||null;
+      body.startsAt=f.startsAt.value?`${f.startsAt.value}:00-03:00`:null;
+      body.endsAt=f.endsAt.value?`${f.endsAt.value}:00-03:00`:null;
+      body.unitIds=[...e.target.querySelectorAll('[name="unitId"]:checked')].map(input=>input.value);
+    }else body.name=f.name.value.trim();
+    try{await send(`/api/admin/${isBanner?'banners':'categories'}${item.id?`/${item.id}`:''}`,item.id?'PUT':'POST',body);
+      d.close();flash('Imagem salva.');await(isBanner?loadBanners():loadCategories());}catch(err){alert(err.message);}
+  });d.addEventListener('close',()=>d.remove());d.showModal();
 }
 function promotionEditor(item={}){
   const chosen=new Map((item.product_ids||[]).map(id=>[String(id),products.find(p=>String(p.id)===String(id))?.description||`Produto #${id}`]));
@@ -133,6 +165,10 @@ document.addEventListener('click',async e=>{const button=e.target.closest('butto
     if(button.dataset.editUnit)editor('unit',units.find(u=>String(u.id)===button.dataset.editUnit));
     if(button.dataset.editProduct)editor('product',products.find(p=>String(p.id)===button.dataset.editProduct));
     if(button.id==='new-unit')editor('unit');if(button.id==='new-product')editor('product');
+    if(button.id==='new-category')mediaEditor('category');
+    if(button.dataset.editCategory)mediaEditor('category',categories.find(c=>String(c.id)===button.dataset.editCategory));
+    if(button.id==='new-banner')mediaEditor('banner');
+    if(button.dataset.editBanner)mediaEditor('banner',banners.find(b=>String(b.id)===button.dataset.editBanner));
     if(button.id==='new-promotion')promotionEditor();
     if(button.dataset.editPromotion)promotionEditor(promotions.find(p=>String(p.id)===button.dataset.editPromotion));
     if(button.id==='save-price'){const cents=asCents($('price-value').value);if(!Number.isSafeInteger(cents)||cents<0)throw Error('Preço inválido.');await send(`/api/admin/unit-products/${$('price-unit').value}/${$('price-product').value}`,'PUT',{salePriceCents:cents});flash('Preço salvo.');await loadPrices();}
@@ -160,7 +196,18 @@ document.addEventListener('click',async e=>{const button=e.target.closest('butto
       flash('Chave copiada.');
     }
     if(button.dataset.toggleRegister){await send(`/api/admin/registers/${button.dataset.toggleRegister}`,'PATCH',{active:button.dataset.active!=='true'});await loadRegisters();}
-    if(button.id==='save-settings'){let settings;try{settings=JSON.parse($('settings-value').value);}catch{throw Error('JSON inválido.');}await send(`/api/admin/settings/${$('settings-unit').value}`,'PUT',{settings});flash('Configurações salvas.');}
+    if(button.id==='save-settings'){
+      let settings;try{settings=JSON.parse($('settings-value').value);}catch{throw Error('JSON inválido.');}
+      if(!settings||typeof settings!=='object'||Array.isArray(settings))throw Error('JSON deve ser um objeto.');
+      settings.syncIntervalSeconds=Number($('settings-sync').value);
+      settings.theme={...settings.theme,primaryColor:$('settings-primary').value,accentColor:$('settings-accent').value,
+        backgroundColor:$('settings-background').value,textColor:$('settings-text').value};
+      settings.media={...settings.media,logoUrl:$('settings-logo').value||null,
+        welcomeBackgroundUrl:$('settings-welcome').value||null,homeBackgroundUrl:$('settings-home').value||null,
+        checkoutBackgroundUrl:$('settings-checkout').value||null};
+      settings.paymentMethods=[['PIX','pix'],['CREDIT','credit'],['DEBIT','debit']].filter(([,id])=>$(`settings-${id}`).checked).map(([method])=>method);
+      await send(`/api/admin/settings/${$('settings-unit').value}`,'PUT',{settings});flash('Configurações salvas.');await loadSettings();
+    }
     if(button.id==='refresh-sales')await loadSales();
     if(button.id==='more-sales')await loadSales(true);
     if(button.id==='refresh-mappings')await loadMappings();
@@ -179,6 +226,6 @@ for(const id of ['sales-source','sales-unit'])$(id).addEventListener('change',()
 let salesSearchTimer;$('sales-search').addEventListener('input',()=>{clearTimeout(salesSearchTimer);salesSearchTimer=setTimeout(()=>loadSales().catch(err=>flash(err.message,true)),300);});
 let searchTimer;$('product-search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadProducts().catch(err=>flash(err.message,true)),300);});
 let priceTimer;$('price-product-search').addEventListener('input',()=>{clearTimeout(priceTimer);priceTimer=setTimeout(async()=>{try{const q=encodeURIComponent($('price-product-search').value);const found=await api(`/api/admin/products?limit=200&q=${q}`);$('price-product').innerHTML=found.map(p=>`<option value="${p.id}">${safe(p.description)} · ${safe(p.code)}</option>`).join('');}catch(err){flash(err.message,true);}},300);});
-async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-promotion,#save-price,#create-register,#save-settings').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
+async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-category,#new-banner,#new-promotion,#save-price,#create-register,#save-settings').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
 async function boot(){const config=await api('/api/public-config');if(token)await activate(token);const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.async=true;script.onload=()=>{google.accounts.id.initialize({client_id:config.googleClientId,callback:credential=>activate(credential.credential)});google.accounts.id.renderButton($('google-button'),{theme:'outline',size:'large',text:'signin_with',locale:'pt_BR'});};document.head.append(script);}
 boot().catch(e=>{$('login-error').textContent=e.message;});
