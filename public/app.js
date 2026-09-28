@@ -13,7 +13,7 @@ async function api(url,options={}){
 }
 const send=(url,method,body)=>api(url,{method,body:JSON.stringify(body)});
 const table=(headers,rows)=>`<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${safe(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${headers.length}">Nenhum registro.</td></tr>`}</tbody></table></div>`;
-function selectUnits(){for(const id of ['price-unit','register-unit','settings-unit','sales-unit']){const el=$(id),old=el.value;el.innerHTML=(id==='sales-unit'?'<option value="">Todas</option>':'')+units.filter(u=>u.active).map(u=>`<option value="${u.id}">${safe(u.name)} (${safe(u.acronym)})</option>`).join('');if(units.some(u=>String(u.id)===old))el.value=old;}}
+function selectUnits(){for(const id of ['price-unit','register-unit','settings-unit','sales-unit','sync-unit']){const el=$(id),old=el.value;el.innerHTML=(id==='sales-unit'?'<option value="">Todas</option>':id==='sync-unit'?'<option value="">Todas as unidades</option>':'')+units.filter(u=>u.active).map(u=>`<option value="${u.id}">${safe(u.name)} (${safe(u.acronym)})</option>`).join('');if(units.some(u=>String(u.id)===old))el.value=old;}}
 async function loadUnits(){units=await api('/api/admin/units');selectUnits();$('units-list').innerHTML=table(['Sigla','Unidade','ID externo','Status',''],units.map(u=>`<tr><td>${safe(u.acronym)}</td><td>${safe(u.name)}</td><td>${safe(u.external_id)}</td><td>${u.active?'Ativa':'Inativa'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-unit="${u.id}">Editar</button>`:''}</td></tr>`));}
 async function loadProducts(){const q=encodeURIComponent($('product-search').value);products=await api(`/api/admin/products?limit=200&q=${q}`);$('products-list').innerHTML=table(['Código','Produto','Categoria','Fotos','Preço padrão','EAN','Status',''],products.map(p=>`<tr><td>${safe(p.code)}</td><td>${safe(p.description)}</td><td>${safe(p.category)}</td><td>${p.images?.length||0}</td><td>${p.default_sale_price_cents==null?'—':brl(p.default_sale_price_cents)}</td><td>${safe((p.barcodes||[]).join(', '))}</td><td>${p.active?'Ativo':'Inativo'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-product="${p.id}">Editar</button>`:''}</td></tr>`));$('price-product').innerHTML=products.map(p=>`<option value="${p.id}">${safe(p.description)}</option>`).join('');}
 async function loadCategories(){categories=await api('/api/admin/categories');$('categories-list').innerHTML=table(['Nome','Imagem','Ordem','Ativa',''],categories.map(c=>`<tr><td>${safe(c.name)}</td><td>${c.image_url?`<img class="media-thumb" src="${safe(c.image_url)}" alt="">`:'—'}</td><td>${c.sort_order}</td><td>${c.active?'Sim':'Não'}</td><td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-edit-category="${c.id}">Editar</button>`:''}</td></tr>`));}
@@ -34,6 +34,10 @@ async function loadSettings(){const unit=$('settings-unit').value;if(!unit)retur
   for(const [key,id] of [['logoUrl','logo'],['welcomeBackgroundUrl','welcome'],['homeBackgroundUrl','home'],['checkoutBackgroundUrl','checkout']])$(`settings-${id}`).value=settings.media?.[key]??'';
   for(const [method,id] of [['PIX','pix'],['CREDIT','credit'],['DEBIT','debit']])$(`settings-${id}`).checked=(settings.paymentMethods??['PIX','CREDIT','DEBIT']).includes(method);
 }
+async function loadSyncStatus(){const rows=await api('/api/admin/sync-status');$('sync-status').innerHTML=table(['Unidade','Caixa','Versão solicitada','Última confirmação','Status'],rows.map(r=>{
+  const confirmed=r.acknowledged_revision!=null&&r.current_revision!=null&&BigInt(r.acknowledged_revision)>=BigInt(r.current_revision);
+  return `<tr><td>${safe(r.unit_name)} (${safe(r.acronym)})</td><td>${safe(r.register_name)}</td><td>${safe(r.current_revision||'—')}</td><td>${r.acknowledged_at?new Date(r.acknowledged_at).toLocaleString('pt-BR'):'—'}</td><td>${!r.register_active?'Inativo':confirmed?'Confirmado':'Pendente'}</td></tr>`;
+}));}
 async function loadSales(more=false){
   if(!more)salesOffset=0;
   const params=new URLSearchParams({offset:String(salesOffset),source:$('sales-source').value,
@@ -69,7 +73,7 @@ async function loadMappings(){
   $('mappings-list').onchange=e=>{if(!e.target.matches('[data-map-unit]'))return;
     const row=e.target.closest('tr');row.querySelector('[data-map-target]').innerHTML=registerOptions(e.target.value,null);};
 }
-async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,categories:loadCategories,banners:loadBanners,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sales:()=>loadSales(),['saurus-mappings']:loadMappings}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
+async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,categories:loadCategories,banners:loadBanners,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sync:loadSyncStatus,sales:()=>loadSales(),['saurus-mappings']:loadMappings}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
 function editor(kind,item={}){
   const fields=kind==='unit'?[['name','Nome da unidade'],['acronym','Sigla'],['externalId','ID da unidade no cadastro atual'],['document','Documento']]:[
     ['description','Descrição'],['code','Código do produto'],['externalId','ID no cadastro atual'],['barcodes','Códigos de barras separados por vírgula'],
@@ -208,6 +212,13 @@ document.addEventListener('click',async e=>{const button=e.target.closest('butto
       settings.paymentMethods=[['PIX','pix'],['CREDIT','credit'],['DEBIT','debit']].filter(([,id])=>$(`settings-${id}`).checked).map(([method])=>method);
       await send(`/api/admin/settings/${$('settings-unit').value}`,'PUT',{settings});flash('Configurações salvas.');await loadSettings();
     }
+    if(button.id==='dispatch-sync'){
+      const selected=$('sync-unit').value;
+      const result=await send('/api/admin/sync-dispatch','POST',{unitId:selected||null});
+      flash(`Atualização solicitada para ${result.units.length} unidade(s). Acompanhe as confirmações abaixo.`);
+      await loadSyncStatus();
+    }
+    if(button.id==='refresh-sync')await loadSyncStatus();
     if(button.id==='refresh-sales')await loadSales();
     if(button.id==='more-sales')await loadSales(true);
     if(button.id==='refresh-mappings')await loadMappings();
@@ -226,6 +237,6 @@ for(const id of ['sales-source','sales-unit'])$(id).addEventListener('change',()
 let salesSearchTimer;$('sales-search').addEventListener('input',()=>{clearTimeout(salesSearchTimer);salesSearchTimer=setTimeout(()=>loadSales().catch(err=>flash(err.message,true)),300);});
 let searchTimer;$('product-search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadProducts().catch(err=>flash(err.message,true)),300);});
 let priceTimer;$('price-product-search').addEventListener('input',()=>{clearTimeout(priceTimer);priceTimer=setTimeout(async()=>{try{const q=encodeURIComponent($('price-product-search').value);const found=await api(`/api/admin/products?limit=200&q=${q}`);$('price-product').innerHTML=found.map(p=>`<option value="${p.id}">${safe(p.description)} · ${safe(p.code)}</option>`).join('');}catch(err){flash(err.message,true);}},300);});
-async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-category,#new-banner,#new-promotion,#save-price,#create-register,#save-settings').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
+async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-category,#new-banner,#new-promotion,#save-price,#create-register,#save-settings,#dispatch-sync').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
 async function boot(){const config=await api('/api/public-config');if(token)await activate(token);const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.async=true;script.onload=()=>{google.accounts.id.initialize({client_id:config.googleClientId,callback:credential=>activate(credential.credential)});google.accounts.id.renderButton($('google-button'),{theme:'outline',size:'large',text:'signin_with',locale:'pt_BR'});};document.head.append(script);}
 boot().catch(e=>{$('login-error').textContent=e.message;});

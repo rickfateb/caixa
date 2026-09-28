@@ -1,6 +1,6 @@
 # Facinho Caixa — contrato para o app Android (28/09/2026)
 
-Este projeto (`rickfateb/caixa`) é independente do Cobile. Base do Portal Dados: `https://portal-caixa-production.up.railway.app`. Use essa base apenas para as três APIs do caixa; não use os subdomínios ou o banco da Cobile. O token exclusivo de cada caixa identifica a unidade. O app não escolhe `unitId` no corpo da venda.
+Este projeto (`rickfateb/caixa`) é independente do Cobile. Base do Portal Dados: `https://portal-caixa-production.up.railway.app`. Use essa base apenas para as APIs do caixa descritas aqui; não use os subdomínios ou o banco da Cobile. O token exclusivo de cada caixa identifica a unidade. O app não escolhe `unitId` no corpo da venda.
 
 ## O que já existe no Portal Dados
 
@@ -18,6 +18,7 @@ Banco PostgreSQL próprio, organizado assim:
 | `banners`, `banner_units` | Oferta visual, vigência e lojas | `id`, `title`, `image_url`, `target_url`, `sort_order`, `starts_at`, `ends_at`, `active`; `banner_units` restringe por loja; sem vínculos significa todas |
 | `promotions`, `promotion_products`, `promotion_units` | Preços temporários/descontos | Tipo, prioridade, abrangência, período, dias da semana e horas locais |
 | `unit_settings` | Configuração por loja | `unit_id`, `settings` JSON, `updated_at` |
+| `unit_sync_state`, `register_sync_status` | Envio e confirmação | Revisão por unidade, solicitante/data; última revisão confirmada e data por caixa |
 | `sales` | Cabeçalho de venda | `id`, `source`, `register_id`, `unit_id`, `client_sale_id`, `occurred_at`, `received_at`, `status`, `total_cents`, `payload_hash`, `raw_payload` |
 | `sale_items` | Linhas da venda | Produto, código lido, descrição, quantidade, preço unitário, desconto, promoção e total |
 | `sale_payments` | Pagamentos | Método, valor, ID local, referência, `metadata`, `simulated` |
@@ -29,12 +30,24 @@ As categorias dos produtos são texto em `products.category`; a imagem é associ
 
 ## Autenticação e sincronização
 
-Em todas as três chamadas enviar `Authorization: Bearer FCX-XXXX-XXXX-XXXX-XXXX`. Caixas antigos ainda podem usar `fcx_...` até trocar a chave. Guardar a chave no armazenamento seguro do Android, nunca no código ou nos logs. O portal guarda somente hash da chave. Recriar a chave no Portal invalida a anterior.
+Em todas as cinco chamadas enviar `Authorization: Bearer FCX-XXXX-XXXX-XXXX-XXXX`. Caixas antigos ainda podem usar `fcx_...` até trocar a chave. Guardar a chave no armazenamento seguro do Android, nunca no código ou nos logs. O portal guarda somente hash da chave. Recriar a chave no Portal invalida a anterior.
 
-1. Ao configurar o caixa, chamar `GET /api/v1/config` e `GET /api/v1/catalog`; persistir as respostas de forma atômica. Sem catálogo válido, não iniciar uma compra.
-2. Aplicar `appConfig.syncIntervalSeconds` (padrão 300, de 60 a 86400 segundos) às atualizações automáticas; oferecer atualização manual. Atualizar catálogo e configuração no mesmo ciclo.
+1. Ao configurar o caixa, chamar `GET /api/v1/sync-state`, `GET /api/v1/config` e `GET /api/v1/catalog`; persistir as respostas de forma atômica. Só depois, confirmar a revisão com `POST /api/v1/sync-ack`. Sem catálogo válido, não iniciar uma compra.
+2. Consultar `GET /api/v1/sync-state` a cada `checkIntervalSeconds` (15 segundos) enquanto o app está conectado. Quando `revision` diferir da última revisão armazenada, baixar catálogo e configuração, persistir ambos e confirmar. Além disso, aplicar `appConfig.syncIntervalSeconds` (padrão 300, de 60 a 86400 segundos) a uma sincronização periódica completa, mesmo sem mudança de revisão; oferecer atualização manual.
 3. Em caso de falha, manter o último snapshot íntegro e sinalizar que os dados estão desatualizados. Guardar vendas em fila persistente antes de qualquer envio. Ao reconectar, reenviar a **mesma** venda com o mesmo `clientSaleId` e mesmo JSON, sem reconstruir preços nem horário.
 4. Dinheiro é inteiro em centavos; IDs `bigint` chegam como strings no JSON; não converter ID para `float`. Horários de eventos são ISO 8601 com fuso; vigência semanal das promoções usa `America/Sao_Paulo`.
+
+### Envio manual do Portal aos caixas
+
+Na aba **Enviar aos caixas**, o administrador escolhe **Todas as unidades** ou uma unidade específica e clica em **Enviar atualização**. O Portal incrementa a revisão apenas das unidades selecionadas. O app busca a nova revisão pela API abaixo e baixa os dados; o painel exibe **Pendente** até a confirmação de cada caixa. Caixa desligado ou sem rede confirmará quando voltar. O botão sinaliza dados novos; não transfere imagens binárias nem afirma entrega antes do ACK.
+
+`GET /api/v1/sync-state`:
+
+```json
+{"unitId":"1","registerId":"2","revision":"4","requestedAt":"2026-09-28T01:00:00.000Z","checkIntervalSeconds":15}
+```
+
+Após salvar *ambas* as respostas `config` e `catalog` para essa revisão, `POST /api/v1/sync-ack` com `{"revision":"4"}`. Retorna `{"acknowledged":true,"currentRevision":"4","upToDate":true}`; se uma revisão mais nova surgir durante a sincronização, `upToDate` será `false` e o caixa deverá repetir. Nunca confirmar apenas por ter recebido HTTP 200 sem persistir os dados. Uma revisão antiga confirmada não substitui uma confirmação mais nova. As rotas administrativas `POST /api/admin/sync-dispatch` e `GET /api/admin/sync-status` exigem login Google e não são usadas pelo app.
 
 ### `GET /api/v1/config`
 
@@ -124,5 +137,6 @@ O Portal administrativo consulta vendas com `GET /api/admin/sales` e detalhes co
 - Produto com preço padrão, substituição por unidade e promoção mostra o preço correto; desconto por quantidade recalcula ao alterar a cesta.
 - Pesquisa `600` lista descrições com esse trecho, scanner encontra EAN exato, foto ausente não quebra a tela.
 - Banner vigora apenas na loja/período definido; cores, fundos e intervalo mudam após sincronização.
+- O botão de envio para uma unidade altera somente a revisão dela; o envio geral afeta todas as unidades ativas. Cada caixa mostra confirmação própria após armazenar catálogo e configuração.
 - Pix/crédito/débito estão visivelmente simulados; uma venda registra todos os itens, pagamentos e dados simulados de TEF, e parcelas de crédito quando usadas.
 - Sem conexão, o app guarda o JSON original e reenviá-lo não duplica a venda; 409 fica sinalizado para revisão, sem gerar outro ID automaticamente.

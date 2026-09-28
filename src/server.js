@@ -46,6 +46,7 @@ async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/003_units.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/004_sales_saurus.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/005_media_pos.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/006_sync_dispatch.sql'), 'utf8'));
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);
 }
@@ -372,6 +373,36 @@ app.patch('/api/admin/registers/:id',requireGoogle,admin,async(req,res,next)=>{
     await audit(pool,req.user.email,'STATUS','registers',req.params.id);res.json(rows[0]);
   }catch(e){next(e);}
 });
+app.post('/api/admin/sync-dispatch',requireGoogle,admin,async(req,res,next)=>{
+  let client;
+  try {
+    const unitId=req.body?.unitId??null;
+    if(unitId!==null&&!positiveId(unitId)) throw failure('INVALID_ID');
+    client=await pool.connect();await client.query('BEGIN');
+    const {rows}=await client.query(`INSERT INTO unit_sync_state(unit_id,revision,requested_by)
+      SELECT id,2,$2 FROM units WHERE active=true AND ($1::bigint IS NULL OR id=$1)
+      ON CONFLICT(unit_id) DO UPDATE SET revision=unit_sync_state.revision+1,
+        requested_at=now(),requested_by=excluded.requested_by
+      RETURNING unit_id,revision,requested_at`,[unitId,req.user.email]);
+    if(unitId!==null&&!rows.length) throw failure('UNIT_NOT_FOUND',404);
+    await audit(client,req.user.email,'DISPATCH','unit_sync_state',unitId??'ALL',
+      {unitIds:rows.map(row=>row.unit_id)});
+    await client.query('COMMIT');res.json({units:rows});
+  }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}
+  finally{client?.release();}
+});
+app.get('/api/admin/sync-status',requireGoogle,async(_req,res,next)=>{
+  try {
+    const {rows}=await pool.query(`SELECT r.id AS register_id,r.name AS register_name,r.active AS register_active,
+      u.id AS unit_id,u.name AS unit_name,u.acronym,s.revision AS current_revision,
+      s.requested_at,a.revision AS acknowledged_revision,a.acknowledged_at
+      FROM registers r JOIN units u ON u.id=r.unit_id
+      LEFT JOIN unit_sync_state s ON s.unit_id=u.id
+      LEFT JOIN register_sync_status a ON a.register_id=r.id
+      ORDER BY u.name,r.name`);
+    res.json(rows);
+  }catch(e){next(e);}
+});
 app.get('/api/admin/sales',requireGoogle,async(req,res,next)=>{
   try {
     const unitId=req.query.unitId||null;
@@ -518,6 +549,30 @@ async function requireRegister(req,_res,next){
     req.register=rows[0];next();
   }catch(e){next(e);}
 }
+app.get('/api/v1/sync-state',requireRegister,async(req,res,next)=>{
+  try {
+    await pool.query('INSERT INTO unit_sync_state(unit_id) VALUES($1) ON CONFLICT DO NOTHING',
+      [req.register.unit_id]);
+    const {rows}=await pool.query('SELECT revision,requested_at FROM unit_sync_state WHERE unit_id=$1',
+      [req.register.unit_id]);
+    res.json({unitId:req.register.unit_id,registerId:req.register.id,
+      revision:rows[0].revision,requestedAt:rows[0].requested_at,checkIntervalSeconds:15});
+  }catch(e){next(e);}
+});
+app.post('/api/v1/sync-ack',requireRegister,async(req,res,next)=>{
+  try {
+    const revision=String(req.body?.revision??'');
+    if(!/^[1-9]\d{0,18}$/.test(revision)||BigInt(revision)>9223372036854775807n)
+      throw failure('INVALID_REVISION');
+    const current=(await pool.query('SELECT revision FROM unit_sync_state WHERE unit_id=$1',
+      [req.register.unit_id])).rows[0];
+    if(!current||BigInt(revision)>BigInt(current.revision)) throw failure('INVALID_REVISION');
+    await pool.query(`INSERT INTO register_sync_status(register_id,revision) VALUES($1,$2)
+      ON CONFLICT(register_id) DO UPDATE SET revision=excluded.revision,acknowledged_at=now()
+      WHERE register_sync_status.revision<=excluded.revision`,[req.register.id,revision]);
+    res.json({acknowledged:true,currentRevision:current.revision,upToDate:revision===String(current.revision)});
+  }catch(e){next(e);}
+});
 app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
   try {
     const {rows}=await pool.query(`SELECT p.id,p.external_id,p.status,p.item_type,p.code,p.description,

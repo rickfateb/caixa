@@ -7,11 +7,11 @@ Projeto independente do Cobile, destinado a alimentar o aplicativo de frente de 
 - Portal web em português com login Google e permissões de Administrador/Supervisor.
 - Unidades, produtos, códigos de barras, preços por unidade, configurações e caixas.
 - Cada caixa recebe um token exclusivo, apresentado apenas na criação, que identifica a unidade automaticamente.
-- Três APIs para o app: `GET /api/v1/catalog`, `GET /api/v1/config` e `POST /api/v1/sales`.
+- APIs para o app: `GET /api/v1/catalog`, `GET /api/v1/config`, `GET /api/v1/sync-state`, `POST /api/v1/sync-ack` e `POST /api/v1/sales`.
 - Fotos de produtos, imagens de categorias, banners e identidade visual são cadastrados como URLs HTTPS persistentes. A API fornece os metadados; ainda não hospeda o arquivo binário da imagem.
 - Vendas em transação, com itens e pagamentos e idempotência por `(caixa, clientSaleId)`.
 
-O contrato atualizado para o desenvolvimento Android está em [`docs/CURSOR_ANDROID.md`](docs/CURSOR_ANDROID.md). As migrações `001` a `005` são executadas na inicialização do servidor.
+O contrato atualizado para o desenvolvimento Android está em [`docs/CURSOR_ANDROID.md`](docs/CURSOR_ANDROID.md). As migrações `001` a `006` são executadas na inicialização do servidor. A aba **Enviar aos caixas** publica uma revisão para todas ou uma unidade; o app consulta a revisão e confirma após armazenar catálogo e configuração.
 
 ## Como executar
 
