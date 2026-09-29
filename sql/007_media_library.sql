@@ -13,6 +13,17 @@ CREATE TABLE IF NOT EXISTS media_assets (
   source_url text, attribution text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS media_settings (
+  id integer PRIMARY KEY CHECK(id=1),
+  product_width integer NOT NULL DEFAULT 500, product_height integer NOT NULL DEFAULT 500,
+  banner_width integer NOT NULL DEFAULT 1200, banner_height integer NOT NULL DEFAULT 400,
+  jpeg_quality integer NOT NULL DEFAULT 82, background_color text NOT NULL DEFAULT '#ffffff',
+  product_fit text NOT NULL DEFAULT 'contain' CHECK(product_fit IN ('contain','cover')),
+  auto_generate_categories boolean NOT NULL DEFAULT true,
+  auto_capture_products boolean NOT NULL DEFAULT true,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO media_settings(id) VALUES(1) ON CONFLICT DO NOTHING;
 ALTER TABLE categories ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT '';
 INSERT INTO categories(name)
   SELECT DISTINCT trim(category) FROM products WHERE nullif(trim(category),'') IS NOT NULL
@@ -50,9 +61,11 @@ UPDATE media_jobs SET status='PENDING',available_at=now()+interval '10 minutes',
 -- Backfill idempotente: uma tentativa por registro existente; erros podem ser reenfileirados pelo portal.
 INSERT INTO media_jobs(job_type,entity_type,entity_id)
   SELECT 'GENERATE_BANNERS','CATEGORY',c.id FROM categories c
-  WHERE c.active AND NOT EXISTS(SELECT 1 FROM category_banners b WHERE b.category_id=c.id)
+  WHERE c.active AND (SELECT auto_generate_categories FROM media_settings WHERE id=1)
+    AND NOT EXISTS(SELECT 1 FROM category_banners b WHERE b.category_id=c.id)
     AND NOT EXISTS(SELECT 1 FROM media_jobs j WHERE j.entity_type='CATEGORY' AND j.entity_id=c.id);
 INSERT INTO media_jobs(job_type,entity_type,entity_id)
   SELECT 'CAPTURE_PRODUCTS','PRODUCT',p.id FROM products p
-  WHERE p.active AND NOT EXISTS(SELECT 1 FROM product_images i WHERE i.product_id=p.id AND i.active)
+  WHERE p.active AND (SELECT auto_capture_products FROM media_settings WHERE id=1)
+    AND NOT EXISTS(SELECT 1 FROM product_images i WHERE i.product_id=p.id AND i.active)
     AND NOT EXISTS(SELECT 1 FROM media_jobs j WHERE j.entity_type='PRODUCT' AND j.entity_id=p.id);

@@ -163,7 +163,8 @@ async function saveProduct(req, res, next) {
         VALUES($1,$2,$3,$4,$5)`,[result.rows[0].id,image.image_url,image.alt_text,image.sort_order,image.active]);
     }
     await client.query(`INSERT INTO media_jobs(job_type,entity_type,entity_id)
-      SELECT 'CAPTURE_PRODUCTS','PRODUCT',$1 WHERE NOT EXISTS
+      SELECT 'CAPTURE_PRODUCTS','PRODUCT',$1 WHERE (SELECT auto_capture_products FROM media_settings WHERE id=1)
+      AND NOT EXISTS
         (SELECT 1 FROM product_images WHERE product_id=$1 AND active)
       AND NOT EXISTS(SELECT 1 FROM media_jobs WHERE entity_type='PRODUCT' AND entity_id=$1 AND status IN ('PENDING','RUNNING'))`,
       [result.rows[0].id]);
@@ -194,7 +195,8 @@ async function saveCategory(req,res,next) {
     } else result=await pool.query(`INSERT INTO categories(name,image_url,sort_order,active,description)
       VALUES($1,$2,$3,$4,$5) RETURNING *`,[text(b.name,120),url,b.sortOrder,b.active!==false,text(b.description,500)]);
     await pool.query(`INSERT INTO media_jobs(job_type,entity_type,entity_id)
-      SELECT 'GENERATE_BANNERS','CATEGORY',$1 WHERE NOT EXISTS
+      SELECT 'GENERATE_BANNERS','CATEGORY',$1 WHERE (SELECT auto_generate_categories FROM media_settings WHERE id=1)
+      AND NOT EXISTS
         (SELECT 1 FROM category_banners WHERE category_id=$1)
       AND NOT EXISTS(SELECT 1 FROM media_jobs WHERE entity_type='CATEGORY' AND entity_id=$1 AND status IN ('PENDING','RUNNING'))`,
       [result.rows[0].id]);

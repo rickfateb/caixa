@@ -238,13 +238,20 @@ for(const id of ['sales-source','sales-unit'])$(id).addEventListener('change',()
 let salesSearchTimer;$('sales-search').addEventListener('input',()=>{clearTimeout(salesSearchTimer);salesSearchTimer=setTimeout(()=>loadSales().catch(err=>flash(err.message,true)),300);});
 let searchTimer;$('product-search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadProducts().catch(err=>flash(err.message,true)),300);});
 let priceTimer;$('price-product-search').addEventListener('input',()=>{clearTimeout(priceTimer);priceTimer=setTimeout(async()=>{try{const q=encodeURIComponent($('price-product-search').value);const found=await api(`/api/admin/products?limit=200&q=${q}`);$('price-product').innerHTML=found.map(p=>`<option value="${p.id}">${safe(p.description)} · ${safe(p.code)}</option>`).join('');}catch(err){flash(err.message,true);}},300);});
-async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-category,#new-banner,#new-promotion,#save-price,#create-register,#save-settings,#dispatch-sync,#generate-category,#upload-category,#queue-images,#queue-banners,#upload-other').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
+async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-category,#new-banner,#new-promotion,#save-price,#create-register,#save-settings,#dispatch-sync,#generate-category,#upload-category,#queue-images,#queue-banners,#upload-other,#media-settings-form button').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
 async function boot(){const config=await api('/api/public-config');if(token)await activate(token);const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.async=true;script.onload=()=>{google.accounts.id.initialize({client_id:config.googleClientId,callback:credential=>activate(credential.credential)});google.accounts.id.renderButton($('google-button'),{theme:'outline',size:'large',text:'signin_with',locale:'pt_BR'});};document.head.append(script);}
 boot().catch(e=>{$('login-error').textContent=e.message;});
 
 async function loadMedia(){
   const q=encodeURIComponent($('media-search').value.trim());
-  mediaData=await api(`/api/admin/media?q=${q}`);
+  const [library,settings]=await Promise.all([api(`/api/admin/media?q=${q}`),api('/api/admin/media/settings')]);
+  mediaData=library;
+  const f=$('media-settings-form').elements;
+  for(const [input,key] of [['productWidth','product_width'],['productHeight','product_height'],
+    ['bannerWidth','banner_width'],['bannerHeight','banner_height'],['jpegQuality','jpeg_quality'],
+    ['backgroundColor','background_color'],['productFit','product_fit']])f[input].value=settings[key];
+  f.autoGenerateCategories.checked=settings.auto_generate_categories;
+  f.autoCaptureProducts.checked=settings.auto_capture_products;
   const {categories:cats,products:prods,banners:categoryBanners,assets,jobs}=mediaData;
   const select=$('media-category-id'),previous=select.value;
   select.innerHTML=cats.map(c=>`<option value="${c.id}">${safe(c.name)}</option>`).join('');
@@ -302,3 +309,11 @@ document.addEventListener('click',async e=>{const b=e.target.closest('button');i
   }catch(err){flash(err.message,true);}finally{if(b.id==='generate-category'||b.dataset.mediaCapture)b.disabled=false;}
 });
 $('media-category-id').addEventListener('change',()=>{if(mediaData)loadMedia().catch(err=>flash(err.message,true));});
+$('media-settings-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.target.elements;
+  try{await send('/api/admin/media/settings','PUT',{
+    productWidth:Number(f.productWidth.value),productHeight:Number(f.productHeight.value),
+    bannerWidth:Number(f.bannerWidth.value),bannerHeight:Number(f.bannerHeight.value),
+    jpegQuality:Number(f.jpegQuality.value),backgroundColor:f.backgroundColor.value,productFit:f.productFit.value,
+    autoGenerateCategories:f.autoGenerateCategories.checked,autoCaptureProducts:f.autoCaptureProducts.checked});
+    flash('Configurações de mídia salvas.');await loadMedia();}catch(err){flash(err.message,true);}
+});

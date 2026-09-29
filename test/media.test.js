@@ -12,6 +12,9 @@ test('padroniza foto de produto sem deformar e banner horizontal',async()=>{
   assert.deepEqual([banner.width,banner.height,banner.data.length>0],[1200,400,true]);
   assert.deepEqual([background.width,background.height],[1200,400]);
   assert.equal((await sharp(product.data).metadata()).format,'jpeg');
+  const configured=await normalized(input,'PRODUCT',{product_width:400,product_height:400,
+    jpeg_quality:75,product_fit:'cover',background_color:'#eeeeee'});
+  assert.deepEqual([configured.width,configured.height],[400,400]);
 });
 
 test('gera banner local a partir da categoria sem chave externa',async()=>{

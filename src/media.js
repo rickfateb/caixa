@@ -7,18 +7,22 @@ const bad = (code,status=400) => Object.assign(new Error(code),{status});
 const clean = (s,n=200) => typeof s==='string'?s.trim().slice(0,n):'';
 const assetUrl = id => `/api/media/${id}`;
 const authorizedFile = f => f && ['image/jpeg','image/png','image/webp'].includes(f.mimetype);
-export async function normalized(buffer,kind) {
+export async function normalized(buffer,kind,settings={}) {
   const original=sharp(buffer,{limitInputPixels:25e6,failOn:'error'});
   const info=await original.metadata();
   if(!['jpeg','png','webp'].includes(info.format))throw bad('INVALID_IMAGE');
   const banner=kind!=='PRODUCT';
-  const width=banner?1200:500,height=banner?400:500;
-  const data=await original.rotate().resize(width,height,{fit:banner?'cover':'contain',background:'#ffffff',withoutEnlargement:false})
-    .flatten({background:'#ffffff'}).jpeg({quality:82,mozjpeg:true}).toBuffer();
+  const width=banner?(settings.banner_width??1200):(settings.product_width??500);
+  const height=banner?(settings.banner_height??400):(settings.product_height??500);
+  const data=await original.rotate().resize(width,height,{fit:banner?'cover':settings.product_fit??'contain',
+    background:settings.background_color??'#ffffff',withoutEnlargement:false})
+    .flatten({background:settings.background_color??'#ffffff'})
+    .jpeg({quality:settings.jpeg_quality??82,mozjpeg:true}).toBuffer();
   return {data,width,height};
 }
 async function store(pool,{buffer,kind,name='',source='UPLOADED',sourceUrl=null,attribution=null,keepOriginal=false}) {
-  const result=await normalized(buffer,kind);
+  const settings=(await pool.query('SELECT * FROM media_settings WHERE id=1')).rows[0];
+  const result=await normalized(buffer,kind,settings);
   const {rows}=await pool.query(`INSERT INTO media_assets(kind,original_name,original_data,original_mime,data,mime_type,width,height,bytes,source_type,source_url,attribution)
     VALUES($1,$2,$3,$4,$5,'image/jpeg',$6,$7,$8,$9,$10,$11) RETURNING id`,
     [kind,clean(name,250),keepOriginal?buffer:null,keepOriginal?'image/'+(await sharp(buffer).metadata()).format:null,
@@ -67,6 +71,23 @@ async function findProductImage(product,barcode) {
   return {imageUrl,method,foundBarcode:record.code};
 }
 export function installMediaRoutes(app,pool,requireGoogle,admin,audit){
+  app.get('/api/admin/media/settings',requireGoogle,async(_req,res,next)=>{try{
+    res.json((await pool.query('SELECT * FROM media_settings WHERE id=1')).rows[0]);
+  }catch(e){next(e);}});
+  app.put('/api/admin/media/settings',requireGoogle,admin,async(req,res,next)=>{try{
+    const b=req.body;
+    const integer=(v,min,max)=>Number.isInteger(v)&&v>=min&&v<=max;
+    if(!integer(b.productWidth,200,1000)||!integer(b.productHeight,200,1000)||
+      !integer(b.bannerWidth,600,2400)||!integer(b.bannerHeight,200,1200)||
+      !integer(b.jpegQuality,60,95)||!/^#[0-9a-fA-F]{6}$/.test(b.backgroundColor)||
+      !['contain','cover'].includes(b.productFit))throw bad('INVALID_MEDIA_SETTINGS');
+    const {rows}=await pool.query(`UPDATE media_settings SET product_width=$1,product_height=$2,
+      banner_width=$3,banner_height=$4,jpeg_quality=$5,background_color=$6,product_fit=$7,
+      auto_generate_categories=$8,auto_capture_products=$9,updated_at=now() WHERE id=1 RETURNING *`,
+      [b.productWidth,b.productHeight,b.bannerWidth,b.bannerHeight,b.jpegQuality,b.backgroundColor,b.productFit,
+        b.autoGenerateCategories===true,b.autoCaptureProducts===true]);
+    await audit(pool,req.user.email,'UPDATE','media_settings',1);res.json(rows[0]);
+  }catch(e){next(e);}});
   // A URL é pública para o app e só serve registros que ainda são usados por uma mídia ativa.
   app.get('/api/media/:id',async(req,res,next)=>{try{
     if(!validId(req.params.id))throw bad('INVALID_ID');
