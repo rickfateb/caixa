@@ -238,7 +238,7 @@ for(const id of ['sales-source','sales-unit'])$(id).addEventListener('change',()
 let salesSearchTimer;$('sales-search').addEventListener('input',()=>{clearTimeout(salesSearchTimer);salesSearchTimer=setTimeout(()=>loadSales().catch(err=>flash(err.message,true)),300);});
 let searchTimer;$('product-search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadProducts().catch(err=>flash(err.message,true)),300);});
 let priceTimer;$('price-product-search').addEventListener('input',()=>{clearTimeout(priceTimer);priceTimer=setTimeout(async()=>{try{const q=encodeURIComponent($('price-product-search').value);const found=await api(`/api/admin/products?limit=200&q=${q}`);$('price-product').innerHTML=found.map(p=>`<option value="${p.id}">${safe(p.description)} · ${safe(p.code)}</option>`).join('');}catch(err){flash(err.message,true);}},300);});
-async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-category,#new-banner,#new-promotion,#save-price,#create-register,#save-settings,#dispatch-sync,#generate-category,#upload-category,#queue-images,#queue-banners').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
+async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-category,#new-banner,#new-promotion,#save-price,#create-register,#save-settings,#dispatch-sync,#generate-category,#upload-category,#queue-images,#queue-banners,#upload-other').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
 async function boot(){const config=await api('/api/public-config');if(token)await activate(token);const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.async=true;script.onload=()=>{google.accounts.id.initialize({client_id:config.googleClientId,callback:credential=>activate(credential.credential)});google.accounts.id.renderButton($('google-button'),{theme:'outline',size:'large',text:'signin_with',locale:'pt_BR'});};document.head.append(script);}
 boot().catch(e=>{$('login-error').textContent=e.message;});
 
@@ -259,7 +259,7 @@ async function loadMedia(){
     return `<tr><td>${latest?`<img class="media-product-thumb" src="${safe(latest.imageUrl)}" alt="">`:'—'}</td><td>${safe(p.description)}</td><td>${safe(p.barcodes.join(', '))||'Sem EAN'}</td>
       <td>${safe(latest?.sourceType||'—')}</td><td>${latest?.reviewStatus==='PENDING'?'Aguardando revisão':valid?'Com imagem':'Sem imagem'}</td>
       <td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-media-capture="${p.id}">Buscar</button> <button class="secondary" data-media-upload="${p.id}">Substituir</button> ${latest?.reviewStatus==='PENDING'?`<button data-media-approve="${latest.id}">Aprovar</button>`:''} ${valid?`<button class="danger" data-media-disable="${valid.id}">Inativar</button>`:''}`:''}</td></tr>`;}));
-  $('media-library-list').innerHTML=table(['Prévia','Arquivo','Tipo','Padrão','Origem','Data'],assets.map(a=>`<tr><td><img class="media-thumb" src="/api/media/${a.id}" alt=""></td><td>${safe(a.original_name||'#'+a.id)}</td><td>${safe(a.kind)}</td><td>${a.width} × ${a.height} · ${Math.round(a.bytes/1024)} KB</td><td>${safe(a.source_type)} ${a.source_url?`<a href="${safe(a.source_url)}" target="_blank" rel="noopener">Fonte</a>`:''}</td><td>${new Date(a.created_at).toLocaleDateString('pt-BR')}</td></tr>`));
+  $('media-library-list').innerHTML=table(['Prévia','Arquivo','Tipo','Padrão','Origem','Data',''],assets.map(a=>`<tr><td><img class="media-thumb" src="/api/media/${a.id}" alt=""></td><td>${safe(a.original_name||'#'+a.id)}</td><td>${safe(a.kind)}</td><td>${a.width} × ${a.height} · ${Math.round(a.bytes/1024)} KB</td><td>${safe(a.source_type)} ${a.source_url?`<a href="${safe(a.source_url)}" target="_blank" rel="noopener">Fonte</a>`:''}</td><td>${new Date(a.created_at).toLocaleDateString('pt-BR')}</td></tr>`));
   const missing=prods.filter(p=>!(p.images||[]).some(i=>i.active&&i.reviewStatus==='APPROVED'));
   const emptyCats=cats.filter(c=>!Number(c.banner_count));
   $('media-pending-list').innerHTML=`<p>${emptyCats.length} categoria(s) sem banner e ${missing.length} produto(s) sem imagem aprovada nesta página.</p>`+
@@ -270,13 +270,13 @@ function mediaSubtab(tab){document.querySelectorAll('[data-media-tab]').forEach(
   for(const id of ['category','product','library','pending','media-settings'])$('media-'+id).hidden=id!==tab;}
 async function uploadMedia(kind,entityId){
   const d=document.createElement('dialog');
-  d.innerHTML=`<h2>Enviar ${kind==='PRODUCT'?'imagem do produto':'banner da categoria'}</h2><form><label>Arquivo JPG, PNG ou WebP até 5 MB<input name="file" type="file" accept="image/jpeg,image/png,image/webp" required></label>
-    ${kind==='CATEGORY_BANNER'?'<label>Título<input name="title" maxlength="120"></label>':'<label>EAN do produto (opcional)<input name="barcode" inputmode="numeric"></label>'}
+  d.innerHTML=`<h2>Enviar ${kind==='PRODUCT'?'imagem do produto':kind==='CATEGORY_BANNER'?'banner da categoria':'logo ou fundo'}</h2><form><label>Arquivo JPG, PNG ou WebP até 5 MB<input name="file" type="file" accept="image/jpeg,image/png,image/webp" required></label>
+    ${kind==='CATEGORY_BANNER'?'<label>Título<input name="title" maxlength="120"></label>':kind==='PRODUCT'?'<label>EAN do produto (opcional)<input name="barcode" inputmode="numeric"></label>':''}
     <menu><button type="button" class="secondary" data-close>Cancelar</button><button type="submit">Enviar</button></menu></form>`;
   document.body.append(d);d.querySelector('[data-close]').onclick=()=>d.close();
-  d.querySelector('form').onsubmit=async e=>{e.preventDefault();const form=new FormData(e.target);form.set('kind',kind);form.set('entityId',entityId);
+  d.querySelector('form').onsubmit=async e=>{e.preventDefault();const form=new FormData(e.target);form.set('kind',kind);if(entityId)form.set('entityId',entityId);
     try{const response=await fetch('/api/admin/media/upload',{method:'POST',headers:{Authorization:`Bearer ${token}`},body:form});const data=await response.json();if(!response.ok)throw Error(data.error||`HTTP ${response.status}`);
-      d.close();flash(kind==='PRODUCT'?'Imagem substituída.':'Banner salvo como inativo. Ative após revisar.');await loadMedia();}catch(err){alert(err.message);}};
+      d.close();flash(kind==='PRODUCT'?'Imagem substituída.':kind==='CATEGORY_BANNER'?'Banner salvo como inativo. Ative após revisar.':'Arquivo salvo. Copie a URL na biblioteca.');await loadMedia();}catch(err){alert(err.message);}};
   d.addEventListener('close',()=>d.remove());d.showModal();
 }
 document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b||!$('workspace')||$('workspace').hidden)return;
@@ -285,6 +285,8 @@ document.addEventListener('click',async e=>{const b=e.target.closest('button');i
     if(b.id==='refresh-media'||b.id==='search-media')await loadMedia();
     if(b.id==='generate-category'){b.disabled=true;await send(`/api/admin/media/generate/${$('media-category-id').value}`,'POST',{});flash('Banner gerado.');await loadMedia();}
     if(b.id==='upload-category')await uploadMedia('CATEGORY_BANNER',$('media-category-id').value);
+    if(b.id==='upload-other')await uploadMedia('OTHER');
+    if(b.dataset.copyMedia){await navigator.clipboard.writeText(`${location.origin}/api/media/${b.dataset.copyMedia}`);flash('URL copiada.');}
     if(b.dataset.mediaUpload)await uploadMedia('PRODUCT',b.dataset.mediaUpload);
     if(b.dataset.mediaCapture){b.disabled=true;const r=await send(`/api/admin/media/capture/${b.dataset.mediaCapture}`,'POST',{});flash(r.reviewStatus==='PENDING'?'Imagem encontrada por descrição: revise antes de aprovar.':'Imagem capturada por EAN.');await loadMedia();}
     if(b.dataset.mediaApprove){await send(`/api/admin/media/product-images/${b.dataset.mediaApprove}`,'PATCH',{active:true,reviewStatus:'APPROVED'});await loadMedia();}

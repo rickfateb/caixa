@@ -7,8 +7,10 @@ test('padroniza foto de produto sem deformar e banner horizontal',async()=>{
   const input=await sharp({create:{width:800,height:300,channels:4,background:'#ec8200'}}).png().toBuffer();
   const product=await normalized(input,'PRODUCT');
   const banner=await normalized(input,'CATEGORY_BANNER');
+  const background=await normalized(input,'OTHER');
   assert.deepEqual([product.width,product.height,product.data.length>0],[500,500,true]);
   assert.deepEqual([banner.width,banner.height,banner.data.length>0],[1200,400,true]);
+  assert.deepEqual([background.width,background.height],[1200,400]);
   assert.equal((await sharp(product.data).metadata()).format,'jpeg');
 });
 

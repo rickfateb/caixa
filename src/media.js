@@ -11,7 +11,7 @@ export async function normalized(buffer,kind) {
   const original=sharp(buffer,{limitInputPixels:25e6,failOn:'error'});
   const info=await original.metadata();
   if(!['jpeg','png','webp'].includes(info.format))throw bad('INVALID_IMAGE');
-  const banner=kind==='CATEGORY_BANNER';
+  const banner=kind!=='PRODUCT';
   const width=banner?1200:500,height=banner?400:500;
   const data=await original.rotate().resize(width,height,{fit:banner?'cover':'contain',background:'#ffffff',withoutEnlargement:false})
     .flatten({background:'#ffffff'}).jpeg({quality:82,mozjpeg:true}).toBuffer();
@@ -167,7 +167,7 @@ export function installMediaRoutes(app,pool,requireGoogle,admin,audit){
       [type,type==='CAPTURE_PRODUCTS'?'PRODUCT':'CATEGORY',row.id]);
     res.json({queued:rows.length});
   }catch(e){next(e);}});
-  let working=false;
+  let working=false,completed=0;
   const timer=setInterval(async()=>{if(working)return;working=true;
     try{
       const {rows}=await pool.query(`UPDATE media_jobs SET status='RUNNING',started_at=now() WHERE id=(
@@ -176,7 +176,9 @@ export function installMediaRoutes(app,pool,requireGoogle,admin,audit){
         if(job.job_type==='CAPTURE_PRODUCTS')await capture(pool,job.entity_id);
         else await generate(pool,job.entity_id);
         await pool.query("UPDATE media_jobs SET status='DONE',finished_at=now() WHERE id=$1",[job.id]);
-      }catch(e){await pool.query("UPDATE media_jobs SET status='ERROR',message=$2,finished_at=now() WHERE id=$1",[job.id,clean(e.message,300)]);}}
+        completed++;if(completed===1||completed%25===0)console.log(`Media jobs completed: ${completed}`);
+      }catch(e){console.error(`Media job ${job.id} failed: ${clean(e.message,100)}`);
+        await pool.query("UPDATE media_jobs SET status='ERROR',message=$2,finished_at=now() WHERE id=$1",[job.id,clean(e.message,300)]);}}
     }catch(e){console.error('Media worker:',e);}finally{working=false;}
   },3000);timer.unref();
 }
