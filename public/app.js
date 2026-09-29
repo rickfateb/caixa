@@ -283,7 +283,7 @@ async function uploadMedia(kind,entityId){
   document.body.append(d);d.querySelector('[data-close]').onclick=()=>d.close();
   d.querySelector('form').onsubmit=async e=>{e.preventDefault();const form=new FormData(e.target);form.set('kind',kind);if(entityId)form.set('entityId',entityId);
     try{const response=await fetch('/api/admin/media/upload',{method:'POST',headers:{Authorization:`Bearer ${token}`},body:form});const data=await response.json();if(!response.ok)throw Error(data.error||`HTTP ${response.status}`);
-      d.close();flash(kind==='PRODUCT'?'Imagem substituída.':kind==='CATEGORY_BANNER'?'Banner salvo como inativo. Ative após revisar.':'Arquivo salvo. Copie a URL na biblioteca.');await loadMedia();}catch(err){alert(err.message);}};
+      d.close();flash(kind==='PRODUCT'?`Imagem substituída. Atualização solicitada aos caixas de ${data.syncUnits} unidade(s).`:kind==='CATEGORY_BANNER'?'Banner salvo como inativo. Ative após revisar.':'Arquivo salvo. Copie a URL na biblioteca.');await loadMedia();}catch(err){alert(err.message);}};
   d.addEventListener('close',()=>d.remove());d.showModal();
 }
 document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b||!$('workspace')||$('workspace').hidden)return;

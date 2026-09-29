@@ -1,5 +1,6 @@
 import multer from 'multer';
 import sharp from 'sharp';
+import { publishSyncRevision } from './sync.js';
 
 const upload = multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024,files:1}});
 const validId = value => /^\d+$/.test(String(value)) && Number(value)>0;
@@ -118,7 +119,7 @@ export function installMediaRoutes(app,pool,requireGoogle,admin,audit){
     const kind=clean(req.body.kind,30),entityId=req.body.entityId;
     if(!['PRODUCT','CATEGORY_BANNER','OTHER'].includes(kind))throw bad('INVALID_MEDIA_KIND');
     if(kind!=='OTHER'&&!validId(entityId))throw bad('INVALID_ID');
-    const client=await pool.connect();let assetId;
+    const client=await pool.connect();let assetId,syncUnits=[];
     try{await client.query('BEGIN');
       assetId=await store(client,{buffer:req.file.buffer,kind,name:req.file.originalname,keepOriginal:true});
       if(kind==='PRODUCT'){
@@ -130,6 +131,7 @@ export function installMediaRoutes(app,pool,requireGoogle,admin,audit){
         await client.query(`INSERT INTO product_images(product_id,image_url,asset_id,barcode,source_type,review_status)
           VALUES($1,$2,$3,$4,'UPLOADED','APPROVED')`,[entityId,assetUrl(assetId),assetId,barcode]);
         await client.query('UPDATE products SET updated_at=now() WHERE id=$1',[entityId]);
+        syncUnits=await publishSyncRevision(client);
       }else if(kind==='CATEGORY_BANNER'){
         const category=(await client.query('SELECT id FROM categories WHERE id=$1',[entityId])).rows[0];if(!category)throw bad('NOT_FOUND',404);
         const {rows}=await client.query(`INSERT INTO category_banners(category_id,asset_id,title,source_type)
@@ -137,7 +139,7 @@ export function installMediaRoutes(app,pool,requireGoogle,admin,audit){
         await audit(client,req.user.email,'CREATE','category_banners',rows[0].id);
       }
       await audit(client,req.user.email,'UPLOAD','media_assets',assetId);
-      await client.query('COMMIT');res.status(201).json({id:assetId,url:assetUrl(assetId)});
+      await client.query('COMMIT');res.status(201).json({id:assetId,url:assetUrl(assetId),syncUnits:syncUnits.length});
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   }catch(e){next(e);}});
   app.patch('/api/admin/media/product-images/:id',requireGoogle,admin,async(req,res,next)=>{try{
@@ -150,8 +152,9 @@ export function installMediaRoutes(app,pool,requireGoogle,admin,audit){
         WHERE id=$1 RETURNING *`,[req.params.id,req.body.active===true,
           req.body.reviewStatus==='APPROVED'?'APPROVED':'PENDING']);
       await client.query('UPDATE products SET updated_at=now() WHERE id=$1',[rows[0].product_id]);
+      const syncUnits=await publishSyncRevision(client);
       await audit(client,req.user.email,'UPDATE','product_images',req.params.id);
-      await client.query('COMMIT');res.json(rows[0]);
+      await client.query('COMMIT');res.json({...rows[0],syncUnits:syncUnits.length});
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   }catch(e){next(e);}});
   app.patch('/api/admin/media/category-banners/:id',requireGoogle,admin,async(req,res,next)=>{
@@ -169,8 +172,9 @@ export function installMediaRoutes(app,pool,requireGoogle,admin,audit){
         Number.isInteger(req.body.displayOrder)?req.body.displayOrder:old.display_order]);
       await client.query(`UPDATE categories SET image_url=(SELECT '/api/media/'||asset_id FROM category_banners
         WHERE category_id=$1 AND active AND is_primary),updated_at=now() WHERE id=$1`,[old.category_id]);
+      const syncUnits=await publishSyncRevision(client);
       await audit(client,req.user.email,'UPDATE','category_banners',old.id);
-      await client.query('COMMIT');res.json(rows[0]);
+      await client.query('COMMIT');res.json({...rows[0],syncUnits:syncUnits.length});
     }catch(e){await client.query('ROLLBACK');next(e);}finally{client.release();}
   });
   app.post('/api/admin/media/capture/:productId',requireGoogle,admin,async(req,res,next)=>{try{
@@ -234,7 +238,10 @@ async function capture(pool,id){
     await client.query(`INSERT INTO product_images(product_id,image_url,asset_id,barcode,source_type,review_status,active)
       VALUES($1,$2,$3,$4,'OPEN_FOOD_FACTS',$5,$6)`,[id,assetUrl(assetId),assetId,barcode,
         approved?'APPROVED':'PENDING',approved]);
-    if(approved)await client.query('UPDATE products SET updated_at=now() WHERE id=$1',[id]);
+    if(approved){
+      await client.query('UPDATE products SET updated_at=now() WHERE id=$1',[id]);
+      await publishSyncRevision(client);
+    }
     await client.query('COMMIT');return {id:assetId,url:assetUrl(assetId),reviewStatus:approved?'APPROVED':'PENDING',method:result.method};
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
 }

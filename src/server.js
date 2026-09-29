@@ -9,6 +9,7 @@ import { pickPromotion, quotePrice } from './pricing.js';
 import { createRegisterToken, readRegisterToken } from './register-token.js';
 import { normalizeSaurusSale } from './saurus-import.js';
 import { installMediaRoutes } from './media.js';
+import { publishSyncRevision } from './sync.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { DATABASE_URL, GOOGLE_CLIENT_ID, ADMIN_EMAIL } = process.env;
@@ -161,6 +162,7 @@ async function saveProduct(req, res, next) {
       await client.query('DELETE FROM product_images WHERE product_id=$1',[result.rows[0].id]);
       for (const image of images) await client.query(`INSERT INTO product_images(product_id,image_url,alt_text,sort_order,active)
         VALUES($1,$2,$3,$4,$5)`,[result.rows[0].id,image.image_url,image.alt_text,image.sort_order,image.active]);
+      await publishSyncRevision(client,{actor:req.user.email});
     }
     await client.query(`INSERT INTO media_jobs(job_type,entity_type,entity_id)
       SELECT 'CAPTURE_PRODUCTS','PRODUCT',$1 WHERE (SELECT auto_capture_products FROM media_settings WHERE id=1)
@@ -181,28 +183,33 @@ app.get('/api/admin/categories',requireGoogle,async(_req,res,next)=>{
   catch(e){next(e);}
 });
 async function saveCategory(req,res,next) {
+  let client;
   try {
     const b=req.body;
     if(!text(b.name,120)||!Number.isInteger(b.sortOrder)||Math.abs(b.sortOrder)>100000) throw failure('INVALID_CATEGORY');
     const url=optionalUrl(b.imageUrl);
+    client=await pool.connect();await client.query('BEGIN');
     let result;
     if(b.id){
       if(!positiveId(b.id)) throw failure('INVALID_ID');
-      result=await pool.query(`UPDATE categories SET name=$2,image_url=$3,sort_order=$4,active=$5,
+      result=await client.query(`UPDATE categories SET name=$2,image_url=$3,sort_order=$4,active=$5,
         description=$6,updated_at=now() WHERE id=$1 RETURNING *`,
         [b.id,text(b.name,120),url,b.sortOrder,b.active!==false,text(b.description,500)]);
       if(!result.rows.length) throw failure('NOT_FOUND',404);
-    } else result=await pool.query(`INSERT INTO categories(name,image_url,sort_order,active,description)
+    } else result=await client.query(`INSERT INTO categories(name,image_url,sort_order,active,description)
       VALUES($1,$2,$3,$4,$5) RETURNING *`,[text(b.name,120),url,b.sortOrder,b.active!==false,text(b.description,500)]);
-    await pool.query(`INSERT INTO media_jobs(job_type,entity_type,entity_id)
+    await client.query(`INSERT INTO media_jobs(job_type,entity_type,entity_id)
       SELECT 'GENERATE_BANNERS','CATEGORY',$1 WHERE (SELECT auto_generate_categories FROM media_settings WHERE id=1)
       AND NOT EXISTS
         (SELECT 1 FROM category_banners WHERE category_id=$1)
       AND NOT EXISTS(SELECT 1 FROM media_jobs WHERE entity_type='CATEGORY' AND entity_id=$1 AND status IN ('PENDING','RUNNING'))`,
       [result.rows[0].id]);
-    await audit(pool,req.user.email,b.id?'UPDATE':'CREATE','categories',result.rows[0].id);
+    await publishSyncRevision(client,{actor:req.user.email});
+    await audit(client,req.user.email,b.id?'UPDATE':'CREATE','categories',result.rows[0].id);
+    await client.query('COMMIT');
     res.status(b.id?200:201).json(result.rows[0]);
-  }catch(e){next(e);}
+  }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}
+  finally{client?.release();}
 }
 app.post('/api/admin/categories',requireGoogle,admin,saveCategory);
 app.put('/api/admin/categories/:id',requireGoogle,admin,(req,res,next)=>{req.body.id=req.params.id;saveCategory(req,res,next);});
@@ -235,6 +242,7 @@ async function saveBanner(req,res,next) {
     }else result=await client.query(`INSERT INTO banners(title,image_url,target_url,sort_order,starts_at,ends_at,active)
       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,args);
     for(const id of b.unitIds) await client.query('INSERT INTO banner_units(banner_id,unit_id) VALUES($1,$2)',[result.rows[0].id,id]);
+    await publishSyncRevision(client,{actor:req.user.email});
     await audit(client,req.user.email,b.id?'UPDATE':'CREATE','banners',result.rows[0].id);
     await client.query('COMMIT');res.status(b.id?200:201).json({...result.rows[0],unit_ids:b.unitIds});
   }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}
@@ -326,13 +334,18 @@ app.get('/api/admin/settings/:unitId',requireGoogle,async(req,res,next)=>{
   try {res.json((await pool.query('SELECT settings,updated_at FROM unit_settings WHERE unit_id=$1',[req.params.unitId])).rows[0]||{settings:{}});}catch(e){next(e);}
 });
 app.put('/api/admin/settings/:unitId',requireGoogle,admin,async(req,res,next)=>{
+  let client;
   try {
     if(!positiveId(req.params.unitId)||!req.body.settings||Array.isArray(req.body.settings)||typeof req.body.settings!=='object') throw failure('INVALID_SETTINGS');
     validateAppSettings(req.body.settings);
-    const {rows}=await pool.query(`INSERT INTO unit_settings(unit_id,settings) VALUES($1,$2)
+    client=await pool.connect();await client.query('BEGIN');
+    const {rows}=await client.query(`INSERT INTO unit_settings(unit_id,settings) VALUES($1,$2)
       ON CONFLICT(unit_id) DO UPDATE SET settings=excluded.settings,updated_at=now() RETURNING *`,[req.params.unitId,JSON.stringify(req.body.settings)]);
-    await audit(pool,req.user.email,'UPSERT','unit_settings',req.params.unitId);res.json(rows[0]);
-  }catch(e){next(e);}
+    await publishSyncRevision(client,{actor:req.user.email,unitId:req.params.unitId});
+    await audit(client,req.user.email,'UPSERT','unit_settings',req.params.unitId);
+    await client.query('COMMIT');res.json(rows[0]);
+  }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}
+  finally{client?.release();}
 });
 function validateAppSettings(settings) {
   const sync=settings.syncIntervalSeconds;
@@ -593,6 +606,9 @@ app.post('/api/v1/sync-ack',requireRegister,async(req,res,next)=>{
 });
 app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
   try {
+    const mediaBase=process.env.PUBLIC_BASE_URL?.replace(/\/$/,'')||
+      (process.env.RAILWAY_PUBLIC_DOMAIN?`https://${process.env.RAILWAY_PUBLIC_DOMAIN}`:null);
+    const mediaUrl=url=>url?.startsWith('/api/media/')&&mediaBase?mediaBase+url:url;
     const {rows}=await pool.query(`SELECT p.id,p.external_id,p.status,p.item_type,p.code,p.description,
       p.registered_description,p.ncm,p.category,p.subcategory,p.brand,p.unit_of_measure,
       p.default_sale_price_cents,up.sale_price_cents AS unit_sale_price_cents,
@@ -613,7 +629,8 @@ app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
     const products=rows.map(p=>{
       const selected=pickPromotion(promotions,p.id,at);
       const quote=quotePrice(Number(p.base_price_cents),selected);
-      return {...p,sale_price_cents:quote.totalCents,price_source:selected?'PROMOTION':p.unit_sale_price_cents!=null?'UNIT':'DEFAULT',promotion_id:selected?.id||null};
+      return {...p,image_url:mediaUrl(p.image_url),images:p.images.map(i=>({...i,imageUrl:mediaUrl(i.imageUrl)})),
+        sale_price_cents:quote.totalCents,price_source:selected?'PROMOTION':p.unit_sale_price_cents!=null?'UNIT':'DEFAULT',promotion_id:selected?.id||null};
     });
     const categoryNames=[...new Set(products.map(p=>p.category).filter(Boolean))];
     const categoryRows=categoryNames.length?(await pool.query(`SELECT id,name,image_url,sort_order,
@@ -625,13 +642,14 @@ app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
       WHERE active=true AND name=ANY($1::text[])`,[categoryNames])).rows:[];
     const categoryByName=new Map(categoryRows.map(c=>[c.name,c]));
     const categories=categoryNames.map(name=>categoryByName.get(name)||{id:null,name,image_url:null,sort_order:0,banners:[]})
-      .map(c=>({...c,primary_banner_url:c.image_url}))
+      .map(c=>({...c,image_url:mediaUrl(c.image_url),primary_banner_url:mediaUrl(c.image_url),
+        banners:c.banners.map(b=>({...b,imageUrl:mediaUrl(b.imageUrl)}))}))
       .sort((a,b)=>a.sort_order-b.sort_order||a.name.localeCompare(b.name,'pt-BR'));
     const banners=(await pool.query(`${bannersSql} WHERE b.active=true
       AND (b.starts_at IS NULL OR b.starts_at<=now()) AND (b.ends_at IS NULL OR b.ends_at>now())
       AND (NOT EXISTS(SELECT 1 FROM banner_units WHERE banner_id=b.id)
         OR EXISTS(SELECT 1 FROM banner_units WHERE banner_id=b.id AND unit_id=$1))
-      ORDER BY b.sort_order,b.id`,[req.register.unit_id])).rows;
+      ORDER BY b.sort_order,b.id`,[req.register.unit_id])).rows.map(b=>({...b,image_url:mediaUrl(b.image_url)}));
     res.json({unitId:req.register.unit_id,registerId:req.register.id,generatedAt:at.toISOString(),
       timeZone:'America/Sao_Paulo',products,categories,banners,promotions});
   }catch(e){next(e);}
