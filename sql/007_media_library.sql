@@ -43,3 +43,12 @@ CREATE TABLE IF NOT EXISTS media_jobs (
   status text NOT NULL DEFAULT 'PENDING', message text NOT NULL DEFAULT '',
   started_at timestamptz, finished_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
 );
+-- Backfill idempotente: uma tentativa por registro existente; erros podem ser reenfileirados pelo portal.
+INSERT INTO media_jobs(job_type,entity_type,entity_id)
+  SELECT 'GENERATE_BANNERS','CATEGORY',c.id FROM categories c
+  WHERE c.active AND NOT EXISTS(SELECT 1 FROM category_banners b WHERE b.category_id=c.id)
+    AND NOT EXISTS(SELECT 1 FROM media_jobs j WHERE j.entity_type='CATEGORY' AND j.entity_id=c.id);
+INSERT INTO media_jobs(job_type,entity_type,entity_id)
+  SELECT 'CAPTURE_PRODUCTS','PRODUCT',p.id FROM products p
+  WHERE p.active AND NOT EXISTS(SELECT 1 FROM product_images i WHERE i.product_id=p.id AND i.active)
+    AND NOT EXISTS(SELECT 1 FROM media_jobs j WHERE j.entity_type='PRODUCT' AND j.entity_id=p.id);

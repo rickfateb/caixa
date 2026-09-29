@@ -162,6 +162,11 @@ async function saveProduct(req, res, next) {
       for (const image of images) await client.query(`INSERT INTO product_images(product_id,image_url,alt_text,sort_order,active)
         VALUES($1,$2,$3,$4,$5)`,[result.rows[0].id,image.image_url,image.alt_text,image.sort_order,image.active]);
     }
+    await client.query(`INSERT INTO media_jobs(job_type,entity_type,entity_id)
+      SELECT 'CAPTURE_PRODUCTS','PRODUCT',$1 WHERE NOT EXISTS
+        (SELECT 1 FROM product_images WHERE product_id=$1 AND active)
+      AND NOT EXISTS(SELECT 1 FROM media_jobs WHERE entity_type='PRODUCT' AND entity_id=$1 AND status IN ('PENDING','RUNNING'))`,
+      [result.rows[0].id]);
     await audit(client,req.user.email,b.id?'UPDATE':'CREATE','products',result.rows[0].id);
     await client.query('COMMIT');res.status(b.id?200:201).json({...result.rows[0],barcodes:codes,images:images??[]});
   } catch(e) { if(client) await client.query('ROLLBACK').catch(()=>{});next(e); }
@@ -188,6 +193,11 @@ async function saveCategory(req,res,next) {
       if(!result.rows.length) throw failure('NOT_FOUND',404);
     } else result=await pool.query(`INSERT INTO categories(name,image_url,sort_order,active,description)
       VALUES($1,$2,$3,$4,$5) RETURNING *`,[text(b.name,120),url,b.sortOrder,b.active!==false,text(b.description,500)]);
+    await pool.query(`INSERT INTO media_jobs(job_type,entity_type,entity_id)
+      SELECT 'GENERATE_BANNERS','CATEGORY',$1 WHERE NOT EXISTS
+        (SELECT 1 FROM category_banners WHERE category_id=$1)
+      AND NOT EXISTS(SELECT 1 FROM media_jobs WHERE entity_type='CATEGORY' AND entity_id=$1 AND status IN ('PENDING','RUNNING'))`,
+      [result.rows[0].id]);
     await audit(pool,req.user.email,b.id?'UPDATE':'CREATE','categories',result.rows[0].id);
     res.status(b.id?200:201).json(result.rows[0]);
   }catch(e){next(e);}
