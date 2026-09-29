@@ -8,10 +8,12 @@ Projeto independente do Cobile, destinado a alimentar o aplicativo de frente de 
 - Unidades, produtos, códigos de barras, preços por unidade, configurações e caixas.
 - Cada caixa recebe um token exclusivo, apresentado apenas na criação, que identifica a unidade automaticamente.
 - APIs para o app: `GET /api/v1/catalog`, `GET /api/v1/config`, `GET /api/v1/sync-state`, `POST /api/v1/sync-ack` e `POST /api/v1/sales`.
-- Fotos de produtos, imagens de categorias, banners e identidade visual são cadastrados como URLs HTTPS persistentes. A API fornece os metadados; ainda não hospeda o arquivo binário da imagem.
+- A área **Mídias** recebe uploads, guarda os arquivos no PostgreSQL exclusivo do portal e serve JPGs padronizados. URLs HTTPS antigas continuam aceitas.
 - Vendas em transação, com itens e pagamentos e idempotência por `(caixa, clientSaleId)`.
 
-O contrato atualizado para o desenvolvimento Android está em [`docs/CURSOR_ANDROID.md`](docs/CURSOR_ANDROID.md). As migrações `001` a `006` são executadas na inicialização do servidor. A aba **Enviar aos caixas** publica uma revisão para todas ou uma unidade; o app consulta a revisão e confirma após armazenar catálogo e configuração.
+O contrato atualizado para o desenvolvimento Android está em [`docs/CURSOR_ANDROID.md`](docs/CURSOR_ANDROID.md). As migrações `001` a `007` são executadas na inicialização do servidor. A aba **Enviar aos caixas** publica uma revisão para todas ou uma unidade; o app consulta a revisão e confirma após armazenar catálogo e configuração.
+
+A migração `007` cria a biblioteca de mídia e cadastra categorias ainda ausentes a partir dos produtos. Imagens de produtos são vinculadas prioritariamente pelo EAN. A busca usa Open Food Facts; um resultado por descrição fica pendente até aprovação. Os banners por categoria podem ser múltiplos, ativos ou inativos, com somente um principal. A primeira geração fica inativa para revisão. O gerador local funciona sem chave externa; uma chave `OPENAI_API_KEY` ativa a geração por IA. Os arquivos finais têm 500 × 500 (produto) ou 1200 × 400 (banner). URLs `/api/media/{id}` são relativas ao domínio do portal e podem ser armazenadas no banco local do Android após baixar o conteúdo.
 
 ## Como executar
 
@@ -23,6 +25,9 @@ Node.js 20+, PostgreSQL. Crie um `.env` local a partir de `.env.example` e confi
 | `GOOGLE_CLIENT_ID` | ID do cliente OAuth do login Google. Adicione a origem HTTPS deste portal às origens JavaScript autorizadas no Google Cloud. |
 | `ADMIN_EMAIL` | E-mail Google do primeiro administrador. Precisa corresponder ao e-mail autenticado. |
 | `PORT` | Porta HTTP, definida automaticamente pela Railway. |
+| `OPENAI_API_KEY` | Opcional: geração por IA para banners. Sem ela, o portal cria ilustrações locais. |
+| `OPENAI_IMAGE_MODEL` | Opcional: modelo de imagem; padrão `gpt-image-1.5`. |
+| `MEDIA_USER_AGENT` | Identificação da integração com Open Food Facts. |
 
 ```bash
 npm install

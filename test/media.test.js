@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import sharp from 'sharp';
+import {normalized,localBanner} from '../src/media.js';
+
+test('padroniza foto de produto sem deformar e banner horizontal',async()=>{
+  const input=await sharp({create:{width:800,height:300,channels:4,background:'#ec8200'}}).png().toBuffer();
+  const product=await normalized(input,'PRODUCT');
+  const banner=await normalized(input,'CATEGORY_BANNER');
+  assert.deepEqual([product.width,product.height,product.data.length>0],[500,500,true]);
+  assert.deepEqual([banner.width,banner.height,banner.data.length>0],[1200,400,true]);
+  assert.equal((await sharp(product.data).metadata()).format,'jpeg');
+});
+
+test('gera banner local a partir da categoria sem chave externa',async()=>{
+  const result=await localBanner({name:'Bebidas & sucos',description:'Água, sucos e refrigerantes'});
+  const meta=await sharp(result).metadata();
+  assert.equal(meta.width,1200);
+  assert.equal(meta.height,400);
+});

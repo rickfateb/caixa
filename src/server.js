@@ -8,6 +8,7 @@ import path from 'node:path';
 import { pickPromotion, quotePrice } from './pricing.js';
 import { createRegisterToken, readRegisterToken } from './register-token.js';
 import { normalizeSaurusSale } from './saurus-import.js';
+import { installMediaRoutes } from './media.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { DATABASE_URL, GOOGLE_CLIENT_ID, ADMIN_EMAIL } = process.env;
@@ -25,6 +26,7 @@ const text = (value, max = 250) => typeof value === 'string' ? value.trim().slic
 function imageUrl(value, required = false) {
   if ((value == null || value === '') && !required) return null;
   if (typeof value !== 'string' || value.length > 2048) throw failure('INVALID_IMAGE_URL');
+  if (/^\/api\/media\/[1-9]\d*$/.test(value)) return value;
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) throw Error();
@@ -47,6 +49,8 @@ async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/004_sales_saurus.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/005_media_pos.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/006_sync_dispatch.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/007_media_library.sql'), 'utf8'));
+  await pool.query("UPDATE media_jobs SET status='PENDING',started_at=NULL WHERE status='RUNNING'");
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);
 }
@@ -56,6 +60,7 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '256kb' }));
 app.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 app.use(express.static(path.join(root, 'public'), { index: false }));
+installMediaRoutes(app, pool, requireGoogle, admin, audit);
 app.get('/health', async (_req, res) => {
   try { await pool.query('SELECT 1'); res.json({ status: 'ok' }); }
   catch { res.status(503).json({ status: 'unavailable' }); }
@@ -177,11 +182,12 @@ async function saveCategory(req,res,next) {
     let result;
     if(b.id){
       if(!positiveId(b.id)) throw failure('INVALID_ID');
-      result=await pool.query(`UPDATE categories SET name=$2,image_url=$3,sort_order=$4,active=$5,updated_at=now()
-        WHERE id=$1 RETURNING *`,[b.id,text(b.name,120),url,b.sortOrder,b.active!==false]);
+      result=await pool.query(`UPDATE categories SET name=$2,image_url=$3,sort_order=$4,active=$5,
+        description=$6,updated_at=now() WHERE id=$1 RETURNING *`,
+        [b.id,text(b.name,120),url,b.sortOrder,b.active!==false,text(b.description,500)]);
       if(!result.rows.length) throw failure('NOT_FOUND',404);
-    } else result=await pool.query(`INSERT INTO categories(name,image_url,sort_order,active)
-      VALUES($1,$2,$3,$4) RETURNING *`,[text(b.name,120),url,b.sortOrder,b.active!==false]);
+    } else result=await pool.query(`INSERT INTO categories(name,image_url,sort_order,active,description)
+      VALUES($1,$2,$3,$4,$5) RETURNING *`,[text(b.name,120),url,b.sortOrder,b.active!==false,text(b.description,500)]);
     await audit(pool,req.user.email,b.id?'UPDATE':'CREATE','categories',result.rows[0].id);
     res.status(b.id?200:201).json(result.rows[0]);
   }catch(e){next(e);}
@@ -581,7 +587,9 @@ app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
       COALESCE(up.sale_price_cents,p.default_sale_price_cents) AS base_price_cents,
       GREATEST(p.updated_at,COALESCE(up.updated_at,p.updated_at)) AS updated_at,
       COALESCE((SELECT json_agg(json_build_object('id',i.id,'imageUrl',i.image_url,'altText',i.alt_text,'sortOrder',i.sort_order)
-        ORDER BY i.sort_order,i.id) FROM product_images i WHERE i.product_id=p.id AND i.active=true),'[]'::json) AS images,
+        ORDER BY i.sort_order,i.id) FROM product_images i WHERE i.product_id=p.id AND i.active=true AND i.review_status='APPROVED'),'[]'::json) AS images,
+      (SELECT i.image_url FROM product_images i WHERE i.product_id=p.id AND i.active=true
+        AND i.review_status='APPROVED' ORDER BY i.sort_order,i.id LIMIT 1) AS image_url,
       COALESCE(array_agg(b.barcode) FILTER(WHERE b.barcode IS NOT NULL),'{}') AS barcodes
       FROM products p LEFT JOIN unit_products up ON up.product_id=p.id AND up.unit_id=$1
       LEFT JOIN product_barcodes b ON b.product_id=p.id
@@ -596,10 +604,16 @@ app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
       return {...p,sale_price_cents:quote.totalCents,price_source:selected?'PROMOTION':p.unit_sale_price_cents!=null?'UNIT':'DEFAULT',promotion_id:selected?.id||null};
     });
     const categoryNames=[...new Set(products.map(p=>p.category).filter(Boolean))];
-    const categoryRows=categoryNames.length?(await pool.query(`SELECT id,name,image_url,sort_order FROM categories
+    const categoryRows=categoryNames.length?(await pool.query(`SELECT id,name,image_url,sort_order,
+      COALESCE((SELECT json_agg(json_build_object('id',b.id,'title',b.title,'imageUrl','/api/media/'||b.asset_id,
+        'isPrimary',b.is_primary,'displayOrder',b.display_order) ORDER BY b.display_order,b.id)
+        FROM category_banners b WHERE b.category_id=categories.id AND b.active
+        AND (b.starts_at IS NULL OR b.starts_at<=now()) AND (b.ends_at IS NULL OR b.ends_at>now())),'[]'::json) AS banners
+      FROM categories
       WHERE active=true AND name=ANY($1::text[])`,[categoryNames])).rows:[];
     const categoryByName=new Map(categoryRows.map(c=>[c.name,c]));
-    const categories=categoryNames.map(name=>categoryByName.get(name)||{id:null,name,image_url:null,sort_order:0})
+    const categories=categoryNames.map(name=>categoryByName.get(name)||{id:null,name,image_url:null,sort_order:0,banners:[]})
+      .map(c=>({...c,primary_banner_url:c.image_url}))
       .sort((a,b)=>a.sort_order-b.sort_order||a.name.localeCompare(b.name,'pt-BR'));
     const banners=(await pool.query(`${bannersSql} WHERE b.active=true
       AND (b.starts_at IS NULL OR b.starts_at<=now()) AND (b.ends_at IS NULL OR b.ends_at>now())
@@ -736,6 +750,8 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
 
 app.get('/',(_req,res)=>res.sendFile(path.join(root,'public/index.html')));
 app.use((err,_req,res,_next)=>{
+  if(err.code==='LIMIT_FILE_SIZE') return res.status(413).json({error:'IMAGE_TOO_LARGE'});
+  if(err.code==='LIMIT_UNEXPECTED_FILE') return res.status(400).json({error:'INVALID_IMAGE_UPLOAD'});
   if(err.type==='entity.too.large') return res.status(413).json({error:'PAYLOAD_TOO_LARGE'});
   if(err instanceof SyntaxError && 'body' in err) return res.status(400).json({error:'INVALID_JSON'});
   if(err.code==='23505') return res.status(409).json({error:'DUPLICATE_VALUE'});

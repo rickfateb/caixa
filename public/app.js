@@ -3,7 +3,7 @@ const safe=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&l
 const brl=cents=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(cents||0)/100);
 const asCents=value=>Math.round(Number(String(value).replace(',','.'))*100);
 let token=sessionStorage.getItem('facinho_google_token')||'';
-let me=null,units=[],products=[],categories=[],banners=[],promotions=[],salesOffset=0;
+let me=null,units=[],products=[],categories=[],banners=[],promotions=[],salesOffset=0,mediaData=null;
 const flash=(message,error=false)=>{const el=$('flash');el.textContent=message;el.className='flash'+(error?' error':'');el.hidden=false;setTimeout(()=>el.hidden=true,7000);};
 async function api(url,options={}){
   const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})}});
@@ -73,7 +73,7 @@ async function loadMappings(){
   $('mappings-list').onchange=e=>{if(!e.target.matches('[data-map-unit]'))return;
     const row=e.target.closest('tr');row.querySelector('[data-map-target]').innerHTML=registerOptions(e.target.value,null);};
 }
-async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,categories:loadCategories,banners:loadBanners,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sync:loadSyncStatus,sales:()=>loadSales(),['saurus-mappings']:loadMappings}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
+async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,categories:loadCategories,banners:loadBanners,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sync:loadSyncStatus,sales:()=>loadSales(),['saurus-mappings']:loadMappings,media:loadMedia}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
 function editor(kind,item={}){
   const fields=kind==='unit'?[['name','Nome da unidade'],['acronym','Sigla'],['externalId','ID da unidade no cadastro atual'],['document','Documento']]:[
     ['description','Descrição'],['code','Código do produto'],['externalId','ID no cadastro atual'],['barcodes','Códigos de barras separados por vírgula'],
@@ -84,9 +84,9 @@ function editor(kind,item={}){
   document.body.append(d);d.querySelector('[data-close]').onclick=()=>d.close();
   for(const [key] of fields){const el=d.querySelector(`[name="${key}"]`);let val=key==='defaultPriceCents'?item.default_sale_price_cents:item[key]??item[key.replace(/[A-Z]/g,m=>'_'+m.toLowerCase())]??'';if(key==='barcodes')val=(item.barcodes||[]).join(', ');if(key.endsWith('Cents'))val=val==null||val===''?'':Number(val)/100;el.value=val??'';}
   d.querySelector('[name="active"]').checked=item.active!==false;
-  if(kind==='product')d.querySelector('[name="imageUrls"]').value=(item.images||[]).map(image=>image.imageUrl).join('\n');
+  if(kind==='product')d.querySelector('[name="imageUrls"]').value=(item.images||[]).filter(image=>image.imageUrl?.startsWith('https://')).map(image=>image.imageUrl).join('\n');
   d.querySelector('form').addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.target);const body=Object.fromEntries(fields.map(([key])=>[key,String(f.get(key)||'').trim()]));body.active=!!f.get('active');
-    if(kind==='product'){body.barcodes=body.barcodes.split(',').map(v=>v.trim()).filter(Boolean);body.images=String(f.get('imageUrls')||'').split('\n').map(v=>v.trim()).filter(Boolean).map(imageUrl=>({imageUrl,altText:body.description}));for(const k of ['purchaseCostCents','costCents','defaultPriceCents'])body[k]=body[k]===''?null:asCents(body[k]);}
+    if(kind==='product'){body.barcodes=body.barcodes.split(',').map(v=>v.trim()).filter(Boolean);if(String(f.get('imageUrls')||'').trim())body.images=String(f.get('imageUrls')).split('\n').map(v=>v.trim()).filter(Boolean).map(imageUrl=>({imageUrl,altText:body.description}));for(const k of ['purchaseCostCents','costCents','defaultPriceCents'])body[k]=body[k]===''?null:asCents(body[k]);}
     try{await send(kind==='unit'?(item.id?`/api/admin/units/${item.id}`:'/api/admin/units'):(item.id?`/api/admin/products/${item.id}`:'/api/admin/products'),item.id?(kind==='unit'?'PATCH':'PUT'):'POST',body);d.close();flash('Cadastro salvo.');await(kind==='unit'?loadUnits():loadProducts());}catch(err){alert(err.message);}});
   d.addEventListener('close',()=>d.remove());d.showModal();
 }
@@ -95,6 +95,7 @@ function mediaEditor(kind,item={}){
   d.innerHTML=`<h2>${item.id?'Editar':'Nova'} ${isBanner?'banner':'categoria'}</h2><form>
     <label>${isBanner?'Título':'Nome (igual à categoria no produto)'}<input name="name" maxlength="120" required value="${safe(isBanner?item.title:item.name)}"></label>
     <label>Imagem (URL HTTPS) <input name="imageUrl" type="url" ${isBanner?'required':''} value="${safe(item.image_url)}" placeholder="https://..."></label>
+    ${!isBanner?`<label>Descrição da categoria<textarea name="description" rows="2">${safe(item.description)}</textarea></label>`:''}
     ${isBanner?`<label>Destino ao tocar (URL HTTPS, opcional)<input name="targetUrl" type="url" value="${safe(item.target_url)}"></label>
       <div class="grid"><label>Início (Brasília)<input name="startsAt" type="datetime-local" value="${safe(localDate(item.starts_at))}"></label>
       <label>Fim (Brasília)<input name="endsAt" type="datetime-local" value="${safe(localDate(item.ends_at))}"></label></div>
@@ -109,7 +110,7 @@ function mediaEditor(kind,item={}){
       body.startsAt=f.startsAt.value?`${f.startsAt.value}:00-03:00`:null;
       body.endsAt=f.endsAt.value?`${f.endsAt.value}:00-03:00`:null;
       body.unitIds=[...e.target.querySelectorAll('[name="unitId"]:checked')].map(input=>input.value);
-    }else body.name=f.name.value.trim();
+    }else {body.name=f.name.value.trim();body.description=f.description.value.trim();}
     try{await send(`/api/admin/${isBanner?'banners':'categories'}${item.id?`/${item.id}`:''}`,item.id?'PUT':'POST',body);
       d.close();flash('Imagem salva.');await(isBanner?loadBanners():loadCategories());}catch(err){alert(err.message);}
   });d.addEventListener('close',()=>d.remove());d.showModal();
@@ -237,6 +238,65 @@ for(const id of ['sales-source','sales-unit'])$(id).addEventListener('change',()
 let salesSearchTimer;$('sales-search').addEventListener('input',()=>{clearTimeout(salesSearchTimer);salesSearchTimer=setTimeout(()=>loadSales().catch(err=>flash(err.message,true)),300);});
 let searchTimer;$('product-search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadProducts().catch(err=>flash(err.message,true)),300);});
 let priceTimer;$('price-product-search').addEventListener('input',()=>{clearTimeout(priceTimer);priceTimer=setTimeout(async()=>{try{const q=encodeURIComponent($('price-product-search').value);const found=await api(`/api/admin/products?limit=200&q=${q}`);$('price-product').innerHTML=found.map(p=>`<option value="${p.id}">${safe(p.description)} · ${safe(p.code)}</option>`).join('');}catch(err){flash(err.message,true);}},300);});
-async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-category,#new-banner,#new-promotion,#save-price,#create-register,#save-settings,#dispatch-sync').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
+async function activate(idToken){token=idToken;sessionStorage.setItem('facinho_google_token',token);try{me=await api('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('account').textContent=`${me.name||me.email} · ${me.role}`;await loadUnits();await loadProducts();if(me.role!=='ADMINISTRADOR'){document.querySelectorAll('#new-unit,#new-product,#new-category,#new-banner,#new-promotion,#save-price,#create-register,#save-settings,#dispatch-sync,#generate-category,#upload-category,#queue-images,#queue-banners').forEach(el=>el.hidden=true);}}catch(e){sessionStorage.removeItem('facinho_google_token');token='';$('login-error').textContent=e.message;}}
 async function boot(){const config=await api('/api/public-config');if(token)await activate(token);const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.async=true;script.onload=()=>{google.accounts.id.initialize({client_id:config.googleClientId,callback:credential=>activate(credential.credential)});google.accounts.id.renderButton($('google-button'),{theme:'outline',size:'large',text:'signin_with',locale:'pt_BR'});};document.head.append(script);}
 boot().catch(e=>{$('login-error').textContent=e.message;});
+
+async function loadMedia(){
+  const q=encodeURIComponent($('media-search').value.trim());
+  mediaData=await api(`/api/admin/media?q=${q}`);
+  const {categories:cats,products:prods,banners:categoryBanners,assets,jobs}=mediaData;
+  const select=$('media-category-id'),previous=select.value;
+  select.innerHTML=cats.map(c=>`<option value="${c.id}">${safe(c.name)}</option>`).join('');
+  if(cats.some(c=>String(c.id)===previous))select.value=previous;
+  const categoryId=select.value;
+  $('media-category-list').innerHTML=table(['Imagem','Título','Estado','Principal','Ordem','Ações'],categoryBanners.filter(b=>String(b.category_id)===categoryId).map(b=>`<tr>
+    <td><img class="media-banner" src="/api/media/${b.asset_id}" alt=""></td><td>${safe(b.title||b.category_name)}</td>
+    <td>${b.active?'Ativo':'Inativo'}</td><td>${b.is_primary?'Sim':'Não'}</td><td>${b.display_order}</td>
+    <td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-category-banner="${b.id}" data-action="${b.active?'deactivate':'activate'}">${b.active?'Inativar':'Ativar'}</button> ${b.active&&!b.is_primary?`<button class="secondary" data-category-banner="${b.id}" data-action="primary">Principal</button>`:''} <button class="secondary" data-category-banner="${b.id}" data-action="order">Ordem</button>`:''}</td></tr>`));
+  $('media-product-list').innerHTML=table(['Imagem','Produto','EAN','Origem','Estado','Ações'],prods.map(p=>{
+    const images=p.images||[],latest=images[0],valid=images.find(i=>i.active&&i.reviewStatus==='APPROVED');
+    return `<tr><td>${latest?`<img class="media-product-thumb" src="${safe(latest.imageUrl)}" alt="">`:'—'}</td><td>${safe(p.description)}</td><td>${safe(p.barcodes.join(', '))||'Sem EAN'}</td>
+      <td>${safe(latest?.sourceType||'—')}</td><td>${latest?.reviewStatus==='PENDING'?'Aguardando revisão':valid?'Com imagem':'Sem imagem'}</td>
+      <td>${me.role==='ADMINISTRADOR'?`<button class="secondary" data-media-capture="${p.id}">Buscar</button> <button class="secondary" data-media-upload="${p.id}">Substituir</button> ${latest?.reviewStatus==='PENDING'?`<button data-media-approve="${latest.id}">Aprovar</button>`:''} ${valid?`<button class="danger" data-media-disable="${valid.id}">Inativar</button>`:''}`:''}</td></tr>`;}));
+  $('media-library-list').innerHTML=table(['Prévia','Arquivo','Tipo','Padrão','Origem','Data'],assets.map(a=>`<tr><td><img class="media-thumb" src="/api/media/${a.id}" alt=""></td><td>${safe(a.original_name||'#'+a.id)}</td><td>${safe(a.kind)}</td><td>${a.width} × ${a.height} · ${Math.round(a.bytes/1024)} KB</td><td>${safe(a.source_type)} ${a.source_url?`<a href="${safe(a.source_url)}" target="_blank" rel="noopener">Fonte</a>`:''}</td><td>${new Date(a.created_at).toLocaleDateString('pt-BR')}</td></tr>`));
+  const missing=prods.filter(p=>!(p.images||[]).some(i=>i.active&&i.reviewStatus==='APPROVED'));
+  const emptyCats=cats.filter(c=>!Number(c.banner_count));
+  $('media-pending-list').innerHTML=`<p>${emptyCats.length} categoria(s) sem banner e ${missing.length} produto(s) sem imagem aprovada nesta página.</p>`+
+    table(['Categoria sem banner','Produto sem imagem / revisão'],Array.from({length:Math.max(emptyCats.length,missing.length)},(_,i)=>`<tr><td>${safe(emptyCats[i]?.name)}</td><td>${safe(missing[i]?.description)} ${safe(missing[i]?.barcodes?.join(', '))}</td></tr>`));
+  $('media-jobs-list').innerHTML=table(['Tipo','ID','Estado','Detalhe'],jobs.map(j=>`<tr><td>${safe(j.job_type)}</td><td>${safe(j.entity_id)}</td><td>${safe(j.status)}</td><td>${safe(j.message)}</td></tr>`));
+}
+function mediaSubtab(tab){document.querySelectorAll('[data-media-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.mediaTab===tab));
+  for(const id of ['category','product','library','pending','media-settings'])$('media-'+id).hidden=id!==tab;}
+async function uploadMedia(kind,entityId){
+  const d=document.createElement('dialog');
+  d.innerHTML=`<h2>Enviar ${kind==='PRODUCT'?'imagem do produto':'banner da categoria'}</h2><form><label>Arquivo JPG, PNG ou WebP até 5 MB<input name="file" type="file" accept="image/jpeg,image/png,image/webp" required></label>
+    ${kind==='CATEGORY_BANNER'?'<label>Título<input name="title" maxlength="120"></label>':'<label>EAN do produto (opcional)<input name="barcode" inputmode="numeric"></label>'}
+    <menu><button type="button" class="secondary" data-close>Cancelar</button><button type="submit">Enviar</button></menu></form>`;
+  document.body.append(d);d.querySelector('[data-close]').onclick=()=>d.close();
+  d.querySelector('form').onsubmit=async e=>{e.preventDefault();const form=new FormData(e.target);form.set('kind',kind);form.set('entityId',entityId);
+    try{const response=await fetch('/api/admin/media/upload',{method:'POST',headers:{Authorization:`Bearer ${token}`},body:form});const data=await response.json();if(!response.ok)throw Error(data.error||`HTTP ${response.status}`);
+      d.close();flash(kind==='PRODUCT'?'Imagem substituída.':'Banner salvo como inativo. Ative após revisar.');await loadMedia();}catch(err){alert(err.message);}};
+  d.addEventListener('close',()=>d.remove());d.showModal();
+}
+document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b||!$('workspace')||$('workspace').hidden)return;
+  try{
+    if(b.dataset.mediaTab)mediaSubtab(b.dataset.mediaTab);
+    if(b.id==='refresh-media'||b.id==='search-media')await loadMedia();
+    if(b.id==='generate-category'){b.disabled=true;await send(`/api/admin/media/generate/${$('media-category-id').value}`,'POST',{});flash('Banner gerado.');await loadMedia();}
+    if(b.id==='upload-category')await uploadMedia('CATEGORY_BANNER',$('media-category-id').value);
+    if(b.dataset.mediaUpload)await uploadMedia('PRODUCT',b.dataset.mediaUpload);
+    if(b.dataset.mediaCapture){b.disabled=true;const r=await send(`/api/admin/media/capture/${b.dataset.mediaCapture}`,'POST',{});flash(r.reviewStatus==='PENDING'?'Imagem encontrada por descrição: revise antes de aprovar.':'Imagem capturada por EAN.');await loadMedia();}
+    if(b.dataset.mediaApprove){await send(`/api/admin/media/product-images/${b.dataset.mediaApprove}`,'PATCH',{active:true,reviewStatus:'APPROVED'});await loadMedia();}
+    if(b.dataset.mediaDisable){await send(`/api/admin/media/product-images/${b.dataset.mediaDisable}`,'PATCH',{active:false,reviewStatus:'APPROVED'});await loadMedia();}
+    if(b.dataset.categoryBanner){const item=mediaData.banners.find(x=>String(x.id)===b.dataset.categoryBanner);
+      if(b.dataset.action==='order'){const n=Number(prompt('Nova ordem de exibição',item.display_order));if(!Number.isInteger(n))return;await send(`/api/admin/media/category-banners/${item.id}`,'PATCH',{displayOrder:n});}
+      else await send(`/api/admin/media/category-banners/${item.id}`,'PATCH',b.dataset.action==='primary'?{isPrimary:true}:{active:b.dataset.action==='activate',isPrimary:b.dataset.action==='deactivate'?false:item.is_primary});
+      await loadMedia();}
+    if(b.id==='queue-images'||b.id==='queue-banners'){const r=await send('/api/admin/media/jobs','POST',{type:b.id==='queue-images'?'CAPTURE_PRODUCTS':'GENERATE_BANNERS'});flash(`${r.queued} item(ns) adicionados à fila. Atualize para acompanhar.`);await loadMedia();}
+    if(b.id==='export-media-pending'){const lines=['tipo,id,descricao,ean',...mediaData.categories.filter(c=>!Number(c.banner_count)).map(c=>`categoria,${c.id},"${c.name.replaceAll('"','""')}",`),
+      ...mediaData.products.filter(p=>!(p.images||[]).some(i=>i.active&&i.reviewStatus==='APPROVED')).map(p=>`produto,${p.id},"${p.description.replaceAll('"','""')}","${p.barcodes.join(';')}"`)];
+      const url=URL.createObjectURL(new Blob(['\ufeff'+lines.join('\n')],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='midias-pendentes.csv';a.click();URL.revokeObjectURL(url);}
+  }catch(err){flash(err.message,true);}finally{if(b.id==='generate-category'||b.dataset.mediaCapture)b.disabled=false;}
+});
+$('media-category-id').addEventListener('change',()=>{if(mediaData)loadMedia().catch(err=>flash(err.message,true));});
