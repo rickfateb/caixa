@@ -41,8 +41,12 @@ CREATE TABLE IF NOT EXISTS media_jobs (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   job_type text NOT NULL, entity_type text NOT NULL, entity_id bigint NOT NULL,
   status text NOT NULL DEFAULT 'PENDING', message text NOT NULL DEFAULT '',
-  started_at timestamptz, finished_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+  started_at timestamptz, finished_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
+  available_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE media_jobs ADD COLUMN IF NOT EXISTS available_at timestamptz NOT NULL DEFAULT now();
+UPDATE media_jobs SET status='PENDING',available_at=now()+interval '10 minutes',started_at=NULL,
+  finished_at=NULL WHERE status='ERROR' AND message IN ('IMAGE_SEARCH_FAILED','IMAGE_SOURCE_RATE_LIMITED');
 -- Backfill idempotente: uma tentativa por registro existente; erros podem ser reenfileirados pelo portal.
 INSERT INTO media_jobs(job_type,entity_type,entity_id)
   SELECT 'GENERATE_BANNERS','CATEGORY',c.id FROM categories c

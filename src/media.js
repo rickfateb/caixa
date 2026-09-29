@@ -29,26 +29,36 @@ async function fetchImage(url) {
   const parsed=new URL(url);
   if(parsed.protocol!=='https:' || parsed.hostname!=='images.openfoodfacts.org' || parsed.port || parsed.username || parsed.password)
     throw bad('IMAGE_SOURCE_NOT_ALLOWED');
-  const response=await fetch(url,{headers:{'User-Agent':process.env.MEDIA_USER_AGENT||'FacinhoCaixa/1.0 (portal de dados)'},signal:AbortSignal.timeout(12000),redirect:'error'});
+  const response=await fetch(url,{headers:{'User-Agent':process.env.MEDIA_USER_AGENT||'FacinhoCaixa/1.0 (https://facinho.com)'},signal:AbortSignal.timeout(12000),redirect:'error'});
+  if(response.status===429||response.status===503)throw bad('IMAGE_SOURCE_RATE_LIMITED',429);
   if(!response.ok || !/^image\/(jpeg|png|webp)/.test(response.headers.get('content-type')||''))throw bad('IMAGE_DOWNLOAD_FAILED',502);
   if(Number(response.headers.get('content-length')||0)>5*1024*1024)throw bad('IMAGE_TOO_LARGE');
   const data=Buffer.from(await response.arrayBuffer());
   if(data.length>5*1024*1024)throw bad('IMAGE_TOO_LARGE');
   return data;
 }
-const offHeaders={'User-Agent':process.env.MEDIA_USER_AGENT||'FacinhoCaixa/1.0 (portal de dados)'};
+const offHeaders={'User-Agent':process.env.MEDIA_USER_AGENT||'FacinhoCaixa/1.0 (https://facinho.com)'};
+let nextSearchAt=0;
+async function throttleSearch(){
+  const wait=Math.max(0,nextSearchAt-Date.now());
+  nextSearchAt=Math.max(nextSearchAt,Date.now())+9000;
+  if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
+}
 async function findProductImage(product,barcode) {
   let record=null,method='BARCODE';
   if(barcode){
     const response=await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}?fields=code,product_name,brands,image_front_url,image_url`,{headers:offHeaders,signal:AbortSignal.timeout(12000)});
+    if(response.status===429||response.status===503)throw bad('IMAGE_SOURCE_RATE_LIMITED',429);
     if(response.ok){const data=await response.json();if(data.status===1 && data.product?.code?.replace(/^0+/,'')===barcode.replace(/^0+/,''))record=data.product;}
   }
   if(!record && barcode)throw bad('IMAGE_NOT_FOUND',404);
   if(!record){
+    await throttleSearch();
     const query=[product.brand,product.description].filter(Boolean).join(' ');
     const url=`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(query)}&search_simple=1&action=process&json=1&page_size=5&fields=code,product_name,brands,image_front_url,image_url`;
     const response=await fetch(url,{headers:offHeaders,signal:AbortSignal.timeout(12000)});
-    if(!response.ok)throw bad('IMAGE_SEARCH_FAILED',502);
+    if(response.status===429||response.status===503)throw bad('IMAGE_SOURCE_RATE_LIMITED',429);
+    if(!response.ok)throw bad(`IMAGE_SEARCH_HTTP_${response.status}`,502);
     record=(await response.json()).products?.find(p=>p.image_front_url||p.image_url);
     method='DESCRIPTION';
   }
@@ -171,14 +181,17 @@ export function installMediaRoutes(app,pool,requireGoogle,admin,audit){
   const timer=setInterval(async()=>{if(working)return;working=true;
     try{
       const {rows}=await pool.query(`UPDATE media_jobs SET status='RUNNING',started_at=now() WHERE id=(
-        SELECT id FROM media_jobs WHERE status='PENDING' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`);
+        SELECT id FROM media_jobs WHERE status='PENDING' AND available_at<=now()
+        ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`);
       if(rows.length){const job=rows[0];try{
         if(job.job_type==='CAPTURE_PRODUCTS')await capture(pool,job.entity_id);
         else await generate(pool,job.entity_id);
         await pool.query("UPDATE media_jobs SET status='DONE',finished_at=now() WHERE id=$1",[job.id]);
         completed++;if(completed===1||completed%25===0)console.log(`Media jobs completed: ${completed}`);
       }catch(e){console.error(`Media job ${job.id} failed: ${clean(e.message,100)}`);
-        await pool.query("UPDATE media_jobs SET status='ERROR',message=$2,finished_at=now() WHERE id=$1",[job.id,clean(e.message,300)]);}}
+        if(e.status===429)await pool.query(`UPDATE media_jobs SET status='PENDING',message=$2,
+          available_at=now()+interval '10 minutes',started_at=NULL WHERE id=$1`,[job.id,clean(e.message,300)]);
+        else await pool.query("UPDATE media_jobs SET status='ERROR',message=$2,finished_at=now() WHERE id=$1",[job.id,clean(e.message,300)]);}}
     }catch(e){console.error('Media worker:',e);}finally{working=false;}
   },3000);timer.unref();
 }
