@@ -66,7 +66,7 @@ Resposta representativa:
 }
 ```
 
-`unit.settings` é o JSON editável pelo administrador; **use `appConfig`**, que já vem com padrões resolvidos. Cores em `#RRGGBB`; URLs de imagem são HTTPS ou `null`. As imagens de categorias e os banners vêm no catálogo. `paymentMethods` indica as opções exibidas na simulação. Não há cadastro de CPF, pontos ou vouchers neste projeto.
+`unit.settings` é o JSON editável pelo administrador; **use `appConfig`**, que já vem com padrões resolvidos. Cores em `#RRGGBB`; URLs de imagem são HTTPS ou `null`. As imagens de categorias e os banners vêm no catálogo. `appConfig.paymentMethods` sempre disponibiliza `PIX`, `CREDIT` e `DEBIT` nesta etapa; `appConfig.paymentMode` é `SIMULATED`. Não há cadastro de CPF, pontos ou vouchers neste projeto.
 
 ### `GET /api/v1/catalog`
 
@@ -140,3 +140,14 @@ O Portal administrativo consulta vendas com `GET /api/admin/sales` e detalhes co
 - O botão de envio para uma unidade altera somente a revisão dela; o envio geral afeta todas as unidades ativas. Cada caixa mostra confirmação própria após armazenar catálogo e configuração.
 - Pix/crédito/débito estão visivelmente simulados; uma venda registra todos os itens, pagamentos e dados simulados de TEF, e parcelas de crédito quando usadas.
 - Sem conexão, o app guarda o JSON original e reenviá-lo não duplica a venda; 409 fica sinalizado para revisão, sem gerar outro ID automaticamente.
+
+## Correção de ativação e pagamentos simulados — 05/10/2026
+
+Nos logs de produção, o app `FacinhoCaixa/2.0` recebeu HTTP 401 em `GET /api/v1/sync-state`: o cabeçalho de autenticação foi rejeitado antes da consulta ao banco. O projeto Android não está neste repositório; conferir seu código no Cursor antes de afirmar que a ativação foi corrigida no dispositivo.
+
+- Enviar a chave em `Authorization: Bearer <chave>`, exatamente uma vez. Aplicar `trim()` ao texto digitado/colado, sem cortar seu comprimento. Não colocar a chave apenas no corpo, query string ou em um cabeçalho diferente. Não registrar a chave em logs.
+- Aceitar as chaves novas `FCX-XXXX-XXXX-XXXX-XXXX` e as antigas `fcx_...`; não exigir somente o prefixo antigo. O servidor aceita a chave nova sem hífens ou em minúsculas, restaura sua forma canônica e consulta o mesmo hash cadastrado. Chaves antigas preservam maiúsculas e minúsculas.
+- Validar a chave pela API, sem uma expressão regular local que rejeite formatos suportados. HTTP 401 indica ausência/formato incorreto; HTTP 403 indica chave não autorizada ou caixa/unidade inativo. Erros de rede e HTTP 5xx precisam de mensagens próprias. Não transformar todos os erros em “chave inválida”.
+- Depois da ativação, ler `appConfig.paymentMethods` e mostrar **Pix simulado**, **Crédito simulado** e **Débito simulado**. Todos devem permitir concluir uma compra de teste, com confirmação explícita de simulação e sem captura financeira.
+- Enviar `payments[].simulated: true` com `method` igual a `PIX`, `CREDIT` ou `DEBIT`. Para compatibilidade, a API também aceita essa flag ausente e registra o pagamento como simulado; `false`, tipos inválidos e métodos não suportados recebem `INVALID_SIMULATED_PAYMENT`. Se houver registros de TEF, continuar enviando `status: SIMULATED`, `simulated: true` e referências locais, sem NSU/autorização fictícios.
+- Conferir, no APK, ativação com a última chave de um caixa ativo e uma compra em cada método. Ao reenviar uma venda após falha de rede, manter `clientSaleId` e payload idênticos. Se a ativação continuar em 401 após a atualização do portal, inspecionar o envio de `Authorization` no Android; o servidor não deve liberar acesso sem uma chave válida.

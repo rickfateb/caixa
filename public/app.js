@@ -32,7 +32,7 @@ async function loadSettings(){const unit=$('settings-unit').value;if(!unit)retur
   $('settings-sync').value=settings.syncIntervalSeconds??300;
   for(const [key,id,fallback] of [['primaryColor','primary','#086B3A'],['accentColor','accent','#22B36D'],['backgroundColor','background','#EAFAF8'],['textColor','text','#173C31']])$(`settings-${id}`).value=settings.theme?.[key]??fallback;
   for(const [key,id] of [['logoUrl','logo'],['welcomeBackgroundUrl','welcome'],['homeBackgroundUrl','home'],['checkoutBackgroundUrl','checkout']])$(`settings-${id}`).value=settings.media?.[key]??'';
-  for(const [method,id] of [['PIX','pix'],['CREDIT','credit'],['DEBIT','debit']])$(`settings-${id}`).checked=(settings.paymentMethods??['PIX','CREDIT','DEBIT']).includes(method);
+  for(const id of ['pix','credit','debit'])$(`settings-${id}`).checked=true;
 }
 async function loadSyncStatus(){const rows=await api('/api/admin/sync-status');$('sync-status').innerHTML=table(['Unidade','Caixa','Versão solicitada','Última confirmação','Status'],rows.map(r=>{
   const confirmed=r.acknowledged_revision!=null&&r.current_revision!=null&&BigInt(r.acknowledged_revision)>=BigInt(r.current_revision);

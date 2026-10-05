@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { pickPromotion, quotePrice } from './pricing.js';
 import { createRegisterToken, readRegisterToken } from './register-token.js';
+import { isSimulatedPayment, simulatedPaymentConfig } from './payment-policy.js';
 import { normalizeSaurusSale } from './saurus-import.js';
 import { installMediaRoutes } from './media.js';
 import { publishSyncRevision } from './sync.js';
@@ -369,7 +370,7 @@ function appSettings(settings) {
     syncIntervalSeconds:settings.syncIntervalSeconds??300,
     theme:{primaryColor:'#086B3A',accentColor:'#22B36D',backgroundColor:'#EAFAF8',textColor:'#173C31',...settings.theme},
     media:{logoUrl:null,welcomeBackgroundUrl:null,homeBackgroundUrl:null,checkoutBackgroundUrl:null,...settings.media},
-    paymentMethods:settings.paymentMethods??['PIX','CREDIT','DEBIT']
+    ...simulatedPaymentConfig()
   };
 }
 app.get('/api/admin/registers',requireGoogle,async(_req,res,next)=>{
@@ -571,8 +572,17 @@ app.post('/api/admin/saurus-sales/import',requireGoogle,admin,async(req,res,next
 
 async function requireRegister(req,_res,next){
   try {
-    const token=readRegisterToken(req.get('authorization'));
-    if(!token) throw failure('REGISTER_TOKEN_REQUIRED',401);
+    const authorization=req.get('authorization');
+    const token=readRegisterToken(authorization);
+    if(!token) {
+      // Diagnose Android activation without recording credentials or personal data.
+      console.warn('REGISTER_AUTH_REJECTED',JSON.stringify({
+        path:req.path,authorizationPresent:Boolean(authorization),
+        bearerScheme:/^\s*Bearer(?:\s|$)/i.test(authorization||''),
+        headerLength:authorization?.length||0
+      }));
+      throw failure('REGISTER_TOKEN_REQUIRED',401);
+    }
     const hash=sha(token);
     const {rows}=await pool.query(`SELECT r.id,r.unit_id,r.name FROM registers r JOIN units u ON u.id=r.unit_id
       WHERE r.token_hash=$1 AND r.active=true AND u.active=true`,[hash]);
@@ -688,7 +698,7 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
     }
     for(const payment of b.payments){
       if(!text(payment.method,60)||!cent(payment.amountCents)) throw failure('INVALID_PAYMENT');
-      if(payment.simulated!==undefined&&typeof payment.simulated!=='boolean') throw failure('INVALID_PAYMENT');
+      if(!isSimulatedPayment(payment)) throw failure('INVALID_SIMULATED_PAYMENT');
       if(payment.clientPaymentId!==undefined&&!text(payment.clientPaymentId,80)) throw failure('INVALID_PAYMENT');
       paymentTotal+=payment.amountCents;
     }
@@ -713,7 +723,7 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
       if(!validPaymentLine(entry.paymentLineNumber)||entry.simulated!==true||
         entry.status!=='SIMULATED'||!['PIX','CREDIT','DEBIT'].includes(entry.transactionType)||
         b.payments[entry.paymentLineNumber-1].method!==entry.transactionType||
-        b.payments[entry.paymentLineNumber-1].simulated!==true||
+        !isSimulatedPayment(b.payments[entry.paymentLineNumber-1])||
         !text(b.payments[entry.paymentLineNumber-1].clientPaymentId,80)||
         entry.authorizationCode||entry.nsu||entry.controlCode||
         (entry.occurredAt&&Number.isNaN(Date.parse(entry.occurredAt)))) throw failure('INVALID_SIMULATED_TEF');
@@ -755,7 +765,7 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
       await client.query(`INSERT INTO sale_payments(sale_id,line_number,external_payment_id,method,amount_cents,provider_reference,metadata,simulated)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[saleId,i+1,text(p.clientPaymentId,80)||null,
         text(p.method,60),p.amountCents,text(p.providerReference,120)||null,
-        JSON.stringify(p.metadata && typeof p.metadata==='object'&&!Array.isArray(p.metadata)?p.metadata:{}),p.simulated===true]);
+        JSON.stringify(p.metadata && typeof p.metadata==='object'&&!Array.isArray(p.metadata)?p.metadata:{}),true]);
     }
     for(let i=0;i<(b.installments||[]).length;i++){
       const part=b.installments[i];

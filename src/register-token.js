@@ -18,6 +18,17 @@ export function createRegisterToken() {
 }
 
 export function readRegisterToken(authorization = '') {
-  // Keep existing fcx_ tokens valid for registers that are already installed.
-  return /^Bearer (fcx_[A-Za-z0-9_-]+|FCX-(?:[A-HJ-NP-Z2-9]{4}-){3}[A-HJ-NP-Z2-9]{4})$/.exec(authorization)?.[1];
+  if (typeof authorization !== 'string') return undefined;
+  // Authentication schemes are case-insensitive; copied keys can carry edge spaces.
+  const credential = /^Bearer[ \t]+(\S+)$/i.exec(authorization.trim())?.[1];
+  if (!credential) return undefined;
+  // Legacy credentials contain case-sensitive random data. Never uppercase them.
+  if (/^fcx_[A-Za-z0-9_-]+$/.test(credential)) return credential;
+  // Restore the canonical representation before hashing a human-readable key.
+  // Some Android entry fields remove separators or change the letter case.
+  const compact = credential.toUpperCase().replace(/-/g, '');
+  if (!/^FCX[A-HJ-NP-Z2-9]{16}$/.test(compact)) return undefined;
+  if (!/^FCX(?:-[A-HJ-NP-Z2-9]{4}){4}$/i.test(credential) &&
+      !/^FCX[A-HJ-NP-Z2-9]{16}$/i.test(credential)) return undefined;
+  return `FCX-${compact.slice(3).match(/.{4}/g).join('-')}`;
 }
