@@ -15,6 +15,7 @@ const authorizedXml=(xml,key,protocol) => typeof xml==='string' && xml.includes(
 
 export async function processFiscalDocument(client,document,adapter,now=Date.now()) {
   if (document.environment!==2 || document.snapshot?.issuer?.environment!==2) throw fiscalError('HOMOLOGATION_ONLY');
+  if(document.snapshot.routing && document.snapshot.routing.environment!==2)throw fiscalError('FISCAL_ENVIRONMENT_CHANGED');
   if (digest(canonicalJson(document.snapshot))!==document.snapshot_hash) throw fiscalError('FISCAL_SNAPSHOT_CHANGED');
   const update=async(sql,values=[])=>client.query(`UPDATE fiscal_documents SET ${sql},updated_at=now() WHERE id=$1`,
     [document.id,...values]);

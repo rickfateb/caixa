@@ -119,6 +119,8 @@ O esquema foi desenhado tomando como referência o cadastro Saurus e as tabelas 
 
 Base de emissão centralizada com ACBr para NFC-e modelo 65/SP, em **homologação e sem valor fiscal**. O recebimento de vendas pode preparar documentos quando há emitente habilitado e produtos classificados; um worker dedicado assina/transmite e guarda XML, protocolo e DANFE. A aba Fiscal acompanha os documentos. O PDV pode consultar o estado e baixar os arquivos das próprias vendas.
 
+Em **Fiscal > Ambientes e agendas**, escolha o ambiente por maquininha/PDV e programe dias, horários, vigência ou dia inteiro para todos ou alguns caixas. As agendas usam Brasília e cada venda conserva seu ambiente nos reenvios. A seleção de **Oficial** é registrada com emissão de produção pendente; não libera produção nem gera um cupom de homologação em seu lugar. A prévia por data/hora permite revisar a programação antes de usar o piloto.
+
 Veja [escopo, requisitos, contrato Android, pesquisa tributária e limites para produção](docs/FISCAL_NFCE_ACBR.md). Não houve emissão na SEFAZ ou implantação real. O runtime nativo, A1, CSC, cadastros oficiais e os testes integrados ainda precisam ser fornecidos/validados; esta branch bloqueia produção e vendas de 2027.
 
 ## Segurança e limites desta etapa

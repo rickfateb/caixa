@@ -13,7 +13,8 @@ import { installMediaRoutes } from './media.js';
 import { publishSyncRevision } from './sync.js';
 import { BANNER_POSITIONS, bannerDisplay, limitHomeBanners } from './home-banners.js';
 import { installFiscalRoutes } from './fiscal-routes.js';
-import { enqueueFiscal, publicFiscal } from './fiscal-store.js';
+import { enqueueFiscal, fiscalForSale } from './fiscal-store.js';
+import { currentFiscalEnvironment } from './fiscal-environments.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { DATABASE_URL, GOOGLE_CLIENT_ID, ADMIN_EMAIL } = process.env;
@@ -58,6 +59,7 @@ async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/008_home_banners.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/009_center_banners.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/010_fiscal_homologation.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/011_fiscal_environments.sql'), 'utf8'));
   await pool.query("UPDATE media_jobs SET status='PENDING',started_at=NULL WHERE status='RUNNING'");
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);
@@ -705,6 +707,7 @@ app.get('/api/v1/config',requireRegister,async(req,res,next)=>{
     res.json({unit:rows[0],register:{id:req.register.id,name:req.register.name},
       appConfig:appSettings(rows[0].settings),
       bannerDisplay:bannerDisplay(bannerSettings),
+      fiscal:await currentFiscalEnvironment(pool,req.register.id),
       generatedAt:new Date().toISOString()});
   }catch(e){next(e);}
 });
@@ -774,7 +777,7 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
       const existing=await client.query('SELECT id,payload_hash FROM sales WHERE register_id=$1 AND client_sale_id=$2',
         [req.register.id,text(b.clientSaleId,100)]);
       if(existing.rows[0].payload_hash!==payloadHash) throw failure('SALE_ID_CONFLICT',409);
-      const fiscal=publicFiscal((await client.query('SELECT * FROM fiscal_documents WHERE sale_id=$1 AND environment=2',[existing.rows[0].id])).rows[0]);
+      const fiscal=await fiscalForSale(client,existing.rows[0].id);
       await client.query('COMMIT');
       return res.json({id:existing.rows[0].id,duplicate:true,fiscal});
     }

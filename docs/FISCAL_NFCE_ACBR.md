@@ -53,7 +53,7 @@ Número, chave, fotografia dos itens e XML assinado são persistidos antes da tr
 ## Implementado nesta branch
 
 - Migração `010_fiscal_homologation.sql`: emitentes por unidade, perfis fiscais revisados por produto e documentos com numeração única. Não enfileira histórico antigo.
-- `POST /api/v1/sales`: conserva o contrato e a idempotência; devolve também `fiscal`. Sem emitente habilitado, retorna `DISABLED` e mantém a venda operacional.
+- `POST /api/v1/sales`: conserva o contrato e a idempotência; devolve também `fiscal`. Em homologação, sem emitente habilitado, retorna `DISABLED` e mantém a venda operacional. Seleção de oficial retorna bloqueio explícito de produção pendente.
 - Reserva de numeração transacional com bloqueio do emitente e da venda, restrições de unicidade e fotografia fiscal com hash canônico, independente da ordem das chaves no JSONB.
 - Worker dedicado; as chamadas síncronas à biblioteca nativa ficam fora do processo HTTP. Bloqueio consultivo do PostgreSQL limita a um worker por banco nesta etapa.
 - Assinatura/validação pelo ACBr; autorização reconhecida somente com chave correspondente, ambiente 2, `cStat=100`, protocolo e XML processado. Sucesso do lote não significa autorização do cupom.
@@ -64,6 +64,34 @@ Número, chave, fotografia dos itens e XML assinado são persistidos antes da tr
 Estados: `BLOCKED` sem número reservado; `PENDING`; `SIGNED`; `SUBMITTING`; `UNKNOWN`; `AUTHORIZED`; `REJECTED`; `MANUAL`. Falha apenas no PDF conserva a autorização e tenta gerar o DANFE novamente, sem emitir outra nota.
 
 O perfil inicial é restrito a revenda interna SP, CRT 1, CFOP/CSOSN `5102/102` ou `5405/500`, com PIS/Cofins e origem revisados. Isso não cobre todos os tratamentos dos mercadinhos: campos de ICMS-ST retido, FCP, benefícios, outras operações e eventuais particularidades devem ser implementados conforme o cadastro fiscal aprovado. Não converter todo o catálogo para CSOSN 102.
+
+## Ambientes por maquininha/PDV e agendas
+
+Em **Fiscal > Ambientes e agendas**, o administrador pode escolher `Oficial`, `Homologação` ou `Padrão do serviço` para cada caixa. O padrão inicial do serviço é homologação. A escolha de Oficial fica registrada, mas não libera emissão real nesta versão: aparece como pendente, com `PRODUCTION_NOT_READY`, sem gerar cupom de teste como substituto.
+
+Uma agenda tem nome, ambiente, dias da semana, horário inicial/final ou `Dia todo`, datas de vigência opcionais e destinos (`Todos os PDVs` ou caixas selecionados). Pode ser desativada, editada ou removida. As alterações são preparadas na tela e passam a valer ao clicar em **Salvar ambientes e agendas**. A API audita a alteração, publica uma revisão de sincronização para os caixas e rejeita revisão antiga de outro administrador.
+
+Precedência: agenda para caixas selecionados > agenda para todos > padrão individual > padrão do serviço. Duas agendas ativas do mesmo nível para o mesmo caixa não podem se sobrepor. A validação considera vigência e viradas de meia-noite, inclusive quando as janelas começam em datas diferentes. Fora das janelas, volta a valer o padrão individual/do serviço.
+
+Horário: `America/Sao_Paulo`. Início incluído, fim excluído; 14:00-16:00 deixa de valer às 16:00. Se o fim for anterior ao início, a janela atravessa a meia-noite. Dias e datas referem-se ao começo da janela: sexta 22:00-02:00 inclui sábado até 01:59:59. `Dia todo` cobre 00:00 até a próxima meia-noite. Uma vigência sem nenhum dia selecionado é recusada.
+
+Exemplo: serviço em Oficial, agenda de homologação na sexta das 14:00 às 16:00 somente para Caixa A. Durante a janela, A usa homologação e os outros seguem seus padrões. Uma agenda específica de Oficial pode preservar um PDV oficial durante uma agenda geral de homologação. **Oficial continuará pendente de validação de produção nesta branch.**
+
+A prévia permite consultar a configuração salva em uma data/hora sem alterar o serviço. A decisão real é feita no primeiro recebimento/preparação da venda no servidor, com seu relógio; não depende do horário em que o worker transmitir. A decisão, revisão e origem da regra são gravadas por venda. Reenvios, reinícios e mudanças posteriores de configuração conservam esse ambiente. A migração preserva em homologação os documentos anteriores.
+
+A migração `011_fiscal_environments.sql` cria a política e as decisões das vendas, sem relaxar as restrições de homologação dos emitentes/documentos. Não há tarefa cron nem automação externa: cada nova venda e consulta calcula o ambiente pela agenda vigente.
+
+| API | Finalidade |
+| --- | --- |
+| `GET /api/admin/fiscal/environments` | Configuração, caixas e prévia atual; login Google. |
+| `GET /api/admin/fiscal/environments?at=<ISO-com-fuso>` | Prévia da configuração salva, sem efeito na emissão. |
+| `PUT /api/admin/fiscal/environments` | `{revision:"1",config:{defaultEnvironment:2,registerEnvironments:{"1":1},schedules:[]}}`; somente administrador, HTTP 409 em conflito de revisão. |
+| `GET /api/v1/fiscal/environment` | Ambiente atual apenas do PDV autenticado, regra e revisão; nenhuma credencial fiscal. |
+| `GET /api/v1/config` | Inclui `fiscal` com essa decisão atual e `productionEnabled:false`. |
+
+Formato de uma agenda: `{id:"teste-a",name:"Teste Caixa A",enabled:true,environment:2,weekdays:[5],startTime:"14:00",endTime:"16:00",allDay:false,startsOn:null,endsOn:null,registerIds:["1"]}`. Ambiente 1 significa escolha de oficial; 2, homologação. Dias usam 0=domingo a 6=sábado. Lista de destinos vazia representa todos os caixas; a interface exige seleção explícita para a opção de caixas escolhidos.
+
+Em resposta de venda, `requestedEnvironment` mostra a escolha persistida; `environment` refere-se ao documento preparado. Oficial pendente devolve `requestedEnvironment:1`, `environment:null`, `status:"BLOCKED"` e não consome numeração de homologação. A listagem Fiscal inclui também essas vendas bloqueadas, mesmo sem documento.
 
 ## Contrato para o Android
 
@@ -77,6 +105,10 @@ Autenticação: `Authorization: Bearer <token-do-caixa>`, como nas APIs existent
 6. Em `BLOCKED`, `REJECTED` ou `MANUAL`, exibir pendência de homologação e encaminhar para revisão; não inventar número/protocolo nem trocar o ID para tentar emitir novamente.
 
 O Android não foi alterado: seus fontes não estão disponíveis nos repositórios inspecionados. Este contrato permite implementar consulta, comprovante e estados na base local do app.
+
+Para as agendas, consultar `GET /api/v1/fiscal/environment` no início da compra e novamente antes de concluir/enviar, além da sincronização de configuração. Mostrar de forma clara o modo de teste sem valor fiscal. A homologação é destinada a vendas de teste e não substitui o documento de uma compra real. A API atual só admite pagamentos simulados.
+
+O Android pode incluir `fiscalEnvironment:1` ou `2` no JSON original para informar o ambiente que apresentou ao operador/consumidor. Se ele diferir da decisão na primeira recepção, a venda fica fiscalmente bloqueada com `FISCAL_ENVIRONMENT_CHANGED`, sem numeração; não é encaminhada ao outro ambiente automaticamente. Sem a propriedade, permanece a compatibilidade com o app atual, com decisão pelo servidor. Depois da primeira recepção, uma consulta/repetição mostra a decisão original, mesmo se a agenda já mudou. `policyRevision` e `routing.selectedAt` permitem conferir qual configuração foi usada.
 
 ## Homologação e runtime
 
@@ -111,7 +143,7 @@ As rotas administrativas usam login Google e exigem administrador nas alteraçõ
 
 ## Verificado e limites para produção
 
-**38 testes automatizados passaram**, incluindo validação fiscal, centavos/descontos, quantidade fracionada e padding decimal do PostgreSQL, idempotência, rollback da numeração, hash JSONB, persistência antes do envio, consulta após timeout, recuperação de PDF e isolamento dos arquivos por caixa. Também passaram `npm run check`, verificação sintática da aba Fiscal e `git diff --check`.
+**54 testes automatizados passaram**, incluindo validação fiscal, centavos/descontos, quantidade fracionada e padding decimal do PostgreSQL, idempotência, rollback da numeração, hash JSONB, persistência antes do envio, consulta após timeout, recuperação de PDF e isolamento dos arquivos por caixa. Os testes de agendas cobrem fuso de Brasília, limites de janela, dias inteiros, viradas de dia/ano, vigências, prioridades, sobreposições, ambiente preservado nos reenvios, bloqueio de oficial sem fallback, permissões e conflitos de revisão. Também passaram `npm run check`, verificação sintática dos scripts fiscais e `git diff --check`.
 
 Os testes de banco usam PGlite/PostgreSQL em uma conexão. Eles não substituem teste concorrente com múltiplos processos contra o PostgreSQL de implantação. Os testes do emissor usam adaptador e XML sintéticos: **não validam a biblioteca nativa, o certificado, o CSC, o QR Code real, o DANFE real ou uma autorização efetiva na SEFAZ**. O pacote oficial foi instalado e sua importação foi verificada; nenhuma chamada fiscal nativa foi executada.
 

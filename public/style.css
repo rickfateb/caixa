@@ -16,3 +16,13 @@
 #settings details{margin:18px 0}.media-thumb{width:50px;height:50px;object-fit:cover;border-radius:7px}
 .media-tabs{margin:0 0 20px;flex-wrap:wrap}.media-banner{width:150px;height:50px;object-fit:cover;border-radius:7px}.media-product-thumb{width:60px;height:60px;object-fit:contain;background:white;border:1px solid #e4e9df;border-radius:7px}#media-product-list td:last-child{min-width:270px}#media-product-list button,#media-category-list button{margin:2px}
 .banner-settings{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:18px 0}.banner-settings label{min-width:170px;flex:1;margin:0}.banner-settings button{margin-bottom:0}
+.fiscal-dialog{max-height:90vh;overflow:auto;max-width:760px}
+.fiscal-full-width{grid-column:1/-1}.fiscal-dialog fieldset{border:1px solid #dce4da;border-radius:10px;margin:12px 0}
+.fiscal-checks{display:flex;flex-wrap:wrap;gap:5px 16px}.fiscal-checks label,.fiscal-check{display:flex;align-items:center;gap:6px}
+.fiscal-checks input[type=checkbox],.fiscal-check input[type=checkbox]{width:auto;margin:0}
+#fiscal-environments{border-bottom:1px solid #dce4da;padding-bottom:20px;margin-bottom:25px}
+#fiscal-environments h3{margin:8px 0}#fiscal-environments .heading p{max-width:690px}
+#fiscal-environments select[data-fiscal-register]{min-width:160px;margin:0;font-size:12px}
+.fiscal-badge{display:inline-block;padding:6px 9px;border-radius:8px;white-space:nowrap;font-size:12px}
+.fiscal-badge.official{background:#fff1df;color:#8a5616}.fiscal-badge.homologation{background:#edf4f8;color:#305c78}
+.fiscal-dirty{font-size:13px;color:#815317}.fiscal-agenda-heading{margin-top:25px}

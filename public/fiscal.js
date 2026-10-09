@@ -1,13 +1,18 @@
 async function loadFiscal() {
-  const [issuers,documents]=await Promise.all([api('/api/admin/fiscal/issuers'),api('/api/admin/fiscal/documents')]);
+  const [issuers,documents,policy]=await Promise.all([api('/api/admin/fiscal/issuers'),api('/api/admin/fiscal/documents'),
+    api('/api/admin/fiscal/environments')]);
+  fiscalEnvironmentState=policy;fiscalPolicyDirty=false;renderFiscalEnvironments();
   $('fiscal-issuers').innerHTML=`<h3>Emitentes por loja</h3>${me.role==='ADMINISTRADOR'?'<button id="new-fiscal-issuer">Cadastrar emitente de teste</button>':''}` +
     table(['Loja','CNPJ','Série','Próximo número','Situação',''],issuers.map(i=>`<tr><td>${safe(i.unit_name)}</td><td>${safe(i.cnpj)}</td><td>${i.series}</td><td>${i.next_number}</td><td>${i.enabled?'Ativo em homologação':'Desativado'}</td><td>${me.role==='ADMINISTRADOR'?`<button data-fiscal-profile="${i.id}" class="secondary">Classificar produto</button> <button data-fiscal-toggle="${i.id}" data-enabled="${!i.enabled}" class="secondary">${i.enabled?'Desativar':'Ativar testes'}</button>`:''}</td></tr>`));
-  const labels={BLOCKED:'Cadastro pendente',PENDING:'Na fila',SIGNED:'Assinada',SUBMITTING:'Enviando',UNKNOWN:'Consultando SEFAZ',AUTHORIZED:'Autorizada em teste',REJECTED:'Rejeitada',MANUAL:'Revisar'};
+  const labels={DISABLED:'Emissor desativado',BLOCKED:'Emissão bloqueada',PENDING:'Na fila',SIGNED:'Assinada',SUBMITTING:'Enviando',UNKNOWN:'Consultando SEFAZ',AUTHORIZED:'Autorizada em teste',REJECTED:'Rejeitada',MANUAL:'Revisar'};
   const issues={NCM_REQUIRED:'Classificação fiscal do produto pendente.',PRODUCT_FISCAL_MAPPING_REQUIRED:'Produto sem vínculo fiscal.',
     OFFLINE_FISCAL_FLOW_REQUIRED:'Venda fora do prazo de emissão normal; revisar a operação offline.',
     FISCAL_RUNTIME_NOT_CONFIGURED:'Certificado e emissor de teste aguardam configuração.',
-    DANFE_GENERATION_PENDING:'Cupom autorizado em teste; PDF pendente.',RTC_PROFILE_REQUIRED_FOR_2027:'Regras fiscais de 2027 aguardam atualização.'};
-  $('fiscal-documents').innerHTML=table(['Loja','Venda','Série / número','Situação','Retorno','Arquivos'],documents.map(d=>`<tr><td>${safe(d.unitName)}</td><td>${safe(d.saleId)}</td><td>${safe(d.series)} / ${safe(d.number||'Pendente')}</td><td>${safe(labels[d.status]||d.status)}</td><td>${safe(d.message||issues[d.issue]||d.issue||'')}</td><td>${d.status==='AUTHORIZED'?`<button class="secondary" data-fiscal-file="${d.id}" data-type="xml">XML</button> ${d.danfeAvailable?`<button class="secondary" data-fiscal-file="${d.id}" data-type="pdf">Cupom PDF</button>`:''}`:''}</td></tr>`));
+    DANFE_GENERATION_PENDING:'Cupom autorizado em teste; PDF pendente.',RTC_PROFILE_REQUIRED_FOR_2027:'Regras fiscais de 2027 aguardam atualização.',
+    PRODUCTION_NOT_READY:'Ambiente oficial escolhido; emissão real aguarda validação.',
+    FISCAL_ENVIRONMENT_CHANGED:'O ambiente mudou antes do recebimento. Revisar o teste; nenhum cupom foi emitido.',
+    INVALID_FISCAL_ENVIRONMENT:'O caixa informou um ambiente fiscal inválido.'};
+  $('fiscal-documents').innerHTML=table(['Loja','Venda','Ambiente escolhido','Série / número','Situação','Retorno','Arquivos'],documents.map(d=>`<tr><td>${safe(d.unitName)}</td><td>${safe(d.saleId)}</td><td>${d.requestedEnvironment===1?'Oficial':'Homologação'}</td><td>${safe(d.series||'—')} / ${safe(d.number||'Pendente')}</td><td>${safe(labels[d.status]||d.status)}</td><td>${safe(d.message||issues[d.issue]||d.issue||'')}</td><td>${d.status==='AUTHORIZED'?`<button class="secondary" data-fiscal-file="${d.id}" data-type="xml">XML</button> ${d.danfeAvailable?`<button class="secondary" data-fiscal-file="${d.id}" data-type="pdf">Cupom PDF</button>`:''}`:''}</td></tr>`));
   $('new-fiscal-issuer')?.addEventListener('click',()=>fiscalIssuerEditor());
   $('fiscal-issuers').onclick=async event=>{
     const toggle=event.target.closest('[data-fiscal-toggle]'),profile=event.target.closest('[data-fiscal-profile]');
@@ -29,14 +34,16 @@ async function loadFiscal() {
   };
 }
 
-function fiscalDialog(title,fields,onSave) {
+function fiscalDialog(title,fields,onSave,{afterSave,submitLabel='Salvar'}={}) {
   const dialog=document.createElement('dialog');
-  dialog.innerHTML=`<h2>${safe(title)}</h2><form><div class="grid">${fields}</div><p data-error class="error" role="alert"></p><menu><button type="button" class="secondary" data-close>Cancelar</button><button type="submit">Salvar</button></menu></form>`;
+  dialog.className='fiscal-dialog';
+  dialog.innerHTML=`<h2>${safe(title)}</h2><form><div class="grid">${fields}</div><p data-error class="error" role="alert"></p><menu><button type="button" class="secondary" data-close>Cancelar</button><button type="submit">${safe(submitLabel)}</button></menu></form>`;
   dialog.querySelector('[data-close]').onclick=()=>dialog.close();
   dialog.querySelector('form').onsubmit=async event=>{
     event.preventDefault();const button=dialog.querySelector('[type="submit"]');button.disabled=true;
-    try {await onSave(new FormData(event.target));dialog.close();await loadFiscal();flash('Cadastro fiscal salvo para homologação.');}
-    catch(error){dialog.querySelector('[data-error]').textContent=error.message;}
+    try {await onSave(new FormData(event.target));dialog.close();if(afterSave)await afterSave();
+      else {await loadFiscal();flash('Cadastro fiscal salvo para homologação.');}}
+    catch(error){dialog.querySelector('[data-error]').textContent=fiscalPolicyMessage(error.message);}
     finally{button.disabled=false;}
   };
   dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();
