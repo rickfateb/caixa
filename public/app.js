@@ -73,7 +73,7 @@ async function loadMappings(){
   $('mappings-list').onchange=e=>{if(!e.target.matches('[data-map-unit]'))return;
     const row=e.target.closest('tr');row.querySelector('[data-map-target]').innerHTML=registerOptions(e.target.value,null);};
 }
-async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,categories:loadCategories,banners:loadBanners,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sync:loadSyncStatus,sales:()=>loadSales(),['saurus-mappings']:loadMappings,media:loadMedia}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
+async function choose(tab){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==tab);try{await ({units:loadUnits,products:loadProducts,categories:loadCategories,banners:loadBanners,prices:loadPrices,promotions:loadPromotions,registers:loadRegisters,settings:loadSettings,sync:loadSyncStatus,sales:()=>loadSales(),fiscal:()=>loadFiscal(),['saurus-mappings']:loadMappings,media:loadMedia}[tab]||(()=>{}))();}catch(e){flash(e.message,true);}}
 function editor(kind,item={}){
   const fields=kind==='unit'?[['name','Nome da unidade'],['acronym','Sigla'],['externalId','ID da unidade no cadastro atual'],['document','Documento']]:[
     ['description','Descrição'],['code','Código do produto'],['externalId','ID no cadastro atual'],['barcodes','Códigos de barras separados por vírgula'],

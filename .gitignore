@@ -1,3 +1,10 @@
 node_modules/
 .env
 *.log
+
+# Native libraries and taxpayer credentials are provisioned separately.
+fiscal-secrets/
+*.pfx
+*.p12
+*.so
+*.dll
