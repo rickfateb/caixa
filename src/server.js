@@ -11,6 +11,7 @@ import { isSimulatedPayment, simulatedPaymentConfig } from './payment-policy.js'
 import { normalizeSaurusSale } from './saurus-import.js';
 import { installMediaRoutes } from './media.js';
 import { publishSyncRevision } from './sync.js';
+import { BANNER_POSITIONS, bannerDisplay, limitHomeBanners } from './home-banners.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { DATABASE_URL, GOOGLE_CLIENT_ID, ADMIN_EMAIL } = process.env;
@@ -53,6 +54,7 @@ async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/006_sync_dispatch.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/007_media_library.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/008_home_banners.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/009_center_banners.sql'), 'utf8'));
   await pool.query("UPDATE media_jobs SET status='PENDING',started_at=NULL WHERE status='RUNNING'");
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);
@@ -223,14 +225,15 @@ app.get('/api/admin/banner-settings',requireGoogle,async(_req,res,next)=>{
 });
 app.put('/api/admin/banner-settings',requireGoogle,admin,async(req,res,next)=>{
   const {upperCount,lowerCount,transitionSeconds}=req.body||{};
-  if(![upperCount,lowerCount].every(n=>Number.isInteger(n)&&n>=1&&n<=20)||
+  const {centerUpperCount,centerLowerCount}=req.body||{};
+  if(![upperCount,lowerCount,...[centerUpperCount,centerLowerCount].filter(n=>n!==undefined)].every(n=>Number.isInteger(n)&&n>=1&&n<=20)||
      !Number.isInteger(transitionSeconds)||transitionSeconds<2||transitionSeconds>120)
     return next(failure('INVALID_BANNER_SETTINGS'));
   const client=await pool.connect();
   try{await client.query('BEGIN');
     const {rows}=await client.query(`UPDATE home_banner_settings SET upper_count=$1,lower_count=$2,
-      transition_seconds=$3,updated_at=now() WHERE id=1 RETURNING *`,
-      [upperCount,lowerCount,transitionSeconds]);
+      transition_seconds=$3,center_upper_count=COALESCE($4,center_upper_count),center_lower_count=COALESCE($5,center_lower_count),updated_at=now() WHERE id=1 RETURNING *`,
+      [upperCount,lowerCount,transitionSeconds,centerUpperCount,centerLowerCount]);
     await publishSyncRevision(client,{actor:req.user.email});
     await audit(client,req.user.email,'UPDATE','home_banner_settings',1);
     await client.query('COMMIT');res.json(rows[0]);
@@ -248,7 +251,7 @@ async function saveBanner(req,res,next) {
       new Set(b.unitIds.map(String)).size!==b.unitIds.length) throw failure('INVALID_BANNER');
     const url=imageUrl(b.imageUrl,true),target=optionalUrl(b.targetUrl);
     const position=b.position||'UPPER';
-    if(!['UPPER','LOWER'].includes(position))throw failure('INVALID_BANNER_POSITION');
+    if(!BANNER_POSITIONS.includes(position))throw failure('INVALID_BANNER_POSITION');
     const starts=b.startsAt?new Date(b.startsAt):null,ends=b.endsAt?new Date(b.endsAt):null;
     if((starts&&!Number.isFinite(starts.getTime()))||(ends&&!Number.isFinite(ends.getTime()))||
       (starts&&ends&&ends<=starts)) throw failure('INVALID_PERIOD');
@@ -682,16 +685,11 @@ app.get('/api/v1/catalog',requireRegister,async(req,res,next)=>{
       AND (NOT EXISTS(SELECT 1 FROM banner_units WHERE banner_id=b.id)
         OR EXISTS(SELECT 1 FROM banner_units WHERE banner_id=b.id AND unit_id=$1))
        ORDER BY b.sort_order,b.id`,[req.register.unit_id])).rows;
-    const counts={UPPER:0,LOWER:0};
-    const limits={UPPER:bannerSettings.upper_count,LOWER:bannerSettings.lower_count};
-    const banners=eligibleBanners.filter(b=>{
-      const position=b.position||'UPPER';
-      return counts[position]++<limits[position];
-    }).map(b=>({...b,image_url:mediaUrl(b.image_url)}));
-    const bannerDisplay={upperCount:bannerSettings.upper_count,lowerCount:bannerSettings.lower_count,
-      transitionSeconds:bannerSettings.transition_seconds,order:'RANDOM_NO_IMMEDIATE_REPEAT'};
+    const banners=limitHomeBanners(eligibleBanners,bannerSettings)
+      .map(b=>({...b,image_url:mediaUrl(b.image_url)}));
+    const display=bannerDisplay(bannerSettings);
     res.json({unitId:req.register.unit_id,registerId:req.register.id,generatedAt:at.toISOString(),
-      timeZone:'America/Sao_Paulo',products,categories,banners,bannerDisplay,promotions});
+      timeZone:'America/Sao_Paulo',products,categories,banners,bannerDisplay:display,promotions});
   }catch(e){next(e);}
 });
 app.get('/api/v1/config',requireRegister,async(req,res,next)=>{
@@ -702,8 +700,7 @@ app.get('/api/v1/config',requireRegister,async(req,res,next)=>{
     const bannerSettings=(await pool.query('SELECT * FROM home_banner_settings WHERE id=1')).rows[0];
     res.json({unit:rows[0],register:{id:req.register.id,name:req.register.name},
       appConfig:appSettings(rows[0].settings),
-      bannerDisplay:{upperCount:bannerSettings.upper_count,lowerCount:bannerSettings.lower_count,
-        transitionSeconds:bannerSettings.transition_seconds,order:'RANDOM_NO_IMMEDIATE_REPEAT'},
+      bannerDisplay:bannerDisplay(bannerSettings),
       generatedAt:new Date().toISOString()});
   }catch(e){next(e);}
 });

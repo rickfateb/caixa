@@ -1,7 +1,7 @@
 -- Banners da tela inicial: duas faixas independentes e rotação configurável.
 ALTER TABLE banners ADD COLUMN IF NOT EXISTS position text NOT NULL DEFAULT 'UPPER';
 ALTER TABLE banners DROP CONSTRAINT IF EXISTS banners_position_check;
-ALTER TABLE banners ADD CONSTRAINT banners_position_check CHECK (position IN ('UPPER','LOWER'));
+ALTER TABLE banners ADD CONSTRAINT banners_position_check CHECK (position IN ('UPPER','LOWER','CENTER_UPPER','CENTER_LOWER'));
 CREATE INDEX IF NOT EXISTS idx_banners_position_active ON banners(position,active,sort_order,id);
 
 CREATE TABLE IF NOT EXISTS home_banner_settings (
