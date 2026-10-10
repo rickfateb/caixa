@@ -194,10 +194,11 @@ test('PDV can only consult its own sale, and unauthorized users cannot configure
   } finally {if(server)await new Promise(resolve=>server.close(resolve));await db.close();}
 });
 
-test('disabled sales reserve no number; agenda/configuration changes and all replays keep them disabled',async()=>{
+test('disabled sales accept a PDV previous mode, reserve no number and stay disabled after changes/replays',async()=>{
   const db=await database();
   try {
     await addSale(db);await addSale(db,2);await disableAutomatic(db);
+    await db.query('UPDATE sales SET raw_payload=$1 WHERE id=1',[JSON.stringify({fiscalEnvironment:2})]);
     const first=await prepare(db,1,{now});
     assert.equal(first.status,'DISABLED');assert.equal(first.issue,'AUTOMATIC_FISCAL_DISABLED');
     assert.equal(first.requestedEnvironment,0);assert.equal(first.environment,null);
