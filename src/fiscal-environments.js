@@ -139,7 +139,10 @@ export async function pinFiscalEnvironment(client,sale,now=Date.now()) {
   const clientEnvironment=sale.raw_payload?.fiscalEnvironment;
   if(clientEnvironment!==undefined) {
     if(!environment(clientEnvironment))decision.issue='INVALID_FISCAL_ENVIRONMENT';
-    else if(clientEnvironment!==decision.environment)decision.issue='FISCAL_ENVIRONMENT_CHANGED';
+    // A server-side pause is safe even when a PDV still reports its old mode.
+    // No document is created; a manual action must choose the real environment.
+    else if(clientEnvironment!==decision.environment && decision.environment!==0)
+      decision.issue='FISCAL_ENVIRONMENT_CHANGED';
   }
   await client.query(`INSERT INTO fiscal_sale_environments(sale_id,environment,policy_revision,decision,selected_at)
     VALUES($1,$2,$3,$4,$5)`,[sale.id,decision.environment,decision.policyRevision,JSON.stringify(decision),decision.selectedAt]);
