@@ -102,15 +102,17 @@ function normalizeQuantity(value) {
   return match[1] + (match[2]?'.'+match[2].slice(0,3):'');
 }
 
-export function saleSnapshot(sale, issuer, items, payments, profiles, now = Date.now()) {
+export function saleSnapshot(sale, issuer, items, payments, profiles, now = Date.now(), {manual=false}={}) {
   requireValue(sale.source === 'POS' && sale.status === 'APPROVED', 'SALE_NOT_ELIGIBLE');
   requireValue(issuer.environment === 2 && issuer.enabled, 'FISCAL_NOT_ENABLED');
   const at = Date.parse(sale.occurred_at);
   requireValue(Number.isFinite(at) && at <= now + 60000, 'INVALID_FISCAL_DATE');
-  // A queued sale is not an offline fiscal document. Do not silently backdate late sales.
-  requireValue(now - at <= 300000, 'OFFLINE_FISCAL_FLOW_REQUIRED');
+  // Manual homologation uses the actual preparation time and retains the sale's
+  // original date separately. Automatic late sales still require an offline flow.
+  requireValue(manual || now - at <= 300000, 'OFFLINE_FISCAL_FLOW_REQUIRED');
   const year = new Intl.DateTimeFormat('en', {timeZone:'America/Sao_Paulo', year:'numeric'}).format(new Date(at));
-  requireValue(year === '2026', 'RTC_PROFILE_REQUIRED_FOR_2027');
+  const issueYear=new Intl.DateTimeFormat('en',{timeZone:'America/Sao_Paulo',year:'numeric'}).format(new Date(now));
+  requireValue(year === '2026' && issueYear==='2026', 'RTC_PROFILE_REQUIRED_FOR_2027');
   requireValue(items.length > 0 && items.length <= 200 && payments.length > 0, 'INVALID_FISCAL_SALE');
   const fiscalItems = items.map(item => {
     requireValue(item.product_id != null, 'PRODUCT_FISCAL_MAPPING_REQUIRED');
@@ -133,7 +135,8 @@ export function saleSnapshot(sale, issuer, items, payments, profiles, now = Date
   const cpf = sale.raw_payload?.buyerCpf;
   if (cpf != null) requireValue(validCpf(cpf), 'INVALID_BUYER_CPF');
   return {issuer, sale:{id:String(sale.id), clientSaleId:sale.client_sale_id,
-    occurredAt:new Date(at).toISOString(), totalCents:String(total), buyerCpf:cpf || null},
+    occurredAt:new Date(at).toISOString(), ...(manual?{issuedAt:new Date(now).toISOString()}:{}),
+    totalCents:String(total), buyerCpf:cpf || null},
     items:fiscalItems, payments:fiscalPayments};
 }
 
@@ -156,7 +159,7 @@ function localDate(value) {
 
 export function accessKey(snapshot, number, cnf) {
   requireValue(Number.isInteger(number) && number >= 1 && number <= 999999999 && digits(cnf,8), 'INVALID_FISCAL_NUMBER');
-  const base = '35' + localDate(snapshot.sale.occurredAt).month + snapshot.issuer.cnpj + '65' +
+  const base = '35' + localDate(snapshot.sale.issuedAt ?? snapshot.sale.occurredAt).month + snapshot.issuer.cnpj + '65' +
     String(snapshot.issuer.series).padStart(3,'0') + String(number).padStart(9,'0') + '1' + cnf;
   const sum = [...base].reverse().reduce((s,v,i) => s + Number(v) * (2 + i % 8), 0);
   const remainder = sum % 11;
@@ -179,7 +182,7 @@ export function buildNfceIni(snapshot, number, cnf = String(randomInt(0,10000000
   const key = accessKey(snapshot,number,cnf);
   section('infNFe',{versao:'4.00'});
   section('Identificacao',{cNF:cnf,natOp:'VENDA DE MERCADORIAS',mod:65,serie:issuer.series,nNF:number,
-    dhEmi:localDate(snapshot.sale.occurredAt).text,tpNF:1,idDest:1,tpAmb:2,tpImp:4,tpEmis:1,
+    dhEmi:localDate(snapshot.sale.issuedAt ?? snapshot.sale.occurredAt).text,tpNF:1,idDest:1,tpAmb:2,tpImp:4,tpEmis:1,
     finNFe:1,indFinal:1,indPres:1,procEmi:0,cMunFG:issuer.cityCode,verProc:'Facinho-Fiscal-0.1'});
   section('Emitente',{CRT:1,CNPJCPF:issuer.cnpj,xNome:issuer.name,xFant:issuer.tradeName,IE:issuer.ie,
     xLgr:issuer.street,nro:issuer.number,xBairro:issuer.district,cMun:issuer.cityCode,xMun:issuer.city,

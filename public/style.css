@@ -25,4 +25,7 @@
 #fiscal-environments select[data-fiscal-register]{min-width:160px;margin:0;font-size:12px}
 .fiscal-badge{display:inline-block;padding:6px 9px;border-radius:8px;white-space:nowrap;font-size:12px}
 .fiscal-badge.official{background:#fff1df;color:#8a5616}.fiscal-badge.homologation{background:#edf4f8;color:#305c78}
+.fiscal-badge.disabled{background:#edf0ed;color:#59665b}
+.sale-fiscal{border:1px solid #dce4da;border-radius:10px;padding:16px;margin:16px 0}
+.sale-fiscal h3{margin-top:0}.sale-fiscal p{margin:8px 0}.sale-fiscal .row{align-items:flex-end}
 .fiscal-dirty{font-size:13px;color:#815317}.fiscal-agenda-heading{margin-top:25px}

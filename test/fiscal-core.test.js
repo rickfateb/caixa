@@ -22,6 +22,25 @@ test('late offline uploads, Saurus imports and cancelled sales never become new 
   assert.throws(()=>saleSnapshot({...sale,status:'CANCELLED'},issuer,items,payments,profiles,now),/SALE_NOT_ELIGIBLE/);
   assert.throws(()=>saleSnapshot({...sale,occurred_at:'2026-10-08T15:00:00-03:00'},issuer,items,payments,profiles,now),/OFFLINE_FISCAL_FLOW_REQUIRED/);
 });
+test('manual homologation keeps the sale date and uses the actual emission date in XML and key',()=>{
+  const issueTime=Date.parse('2026-11-01T12:30:00-03:00');
+  const snapshot=saleSnapshot(sale,issuer,items,payments,new Map([['1',profile]]),issueTime,{manual:true});
+  assert.equal(snapshot.sale.occurredAt,'2026-10-09T17:59:00.000Z');
+  assert.equal(snapshot.sale.issuedAt,'2026-11-01T15:30:00.000Z');
+  const built=buildNfceIni(snapshot,1,'12345678');
+  assert.match(built.ini,/dhEmi=01\/11\/2026 12:30:00/);assert.match(built.ini,/tpAmb=2/);
+  assert.equal(built.accessKey.slice(2,6),'2611');
+  assert.throws(()=>saleSnapshot(sale,issuer,items,payments,new Map([['1',profile]]),issueTime),/OFFLINE_FISCAL_FLOW_REQUIRED/);
+  assert.throws(()=>saleSnapshot(sale,issuer,items,payments,new Map([['1',profile]]),
+    Date.parse('2027-01-01T12:00:00-03:00'),{manual:true}),/RTC_PROFILE_REQUIRED_FOR_2027/);
+});
+test('manual requests retain production, payment, eligibility and classification restrictions',()=>{
+  const options={manual:true};
+  assert.throws(()=>saleSnapshot(sale,{...issuer,environment:1},items,payments,new Map([['1',profile]]),now,options),/FISCAL_NOT_ENABLED/);
+  assert.throws(()=>saleSnapshot({...sale,status:'CANCELLED'},issuer,items,payments,new Map([['1',profile]]),now,options),/SALE_NOT_ELIGIBLE/);
+  assert.throws(()=>saleSnapshot(sale,issuer,items,[{...payments[0],simulated:false}],new Map([['1',profile]]),now,options),/ONLY_SIMULATED_HOMOLOGATION_PAYMENTS/);
+  assert.throws(()=>saleSnapshot(sale,issuer,items,payments,new Map(),now,options),/NCM_REQUIRED/);
+});
 test('fractional quantities round in integer cents and discounts keep totals consistent',()=>{
   assert.equal(grossCents('0.125','499'),62n);
   assert.equal(grossCents('0.500','1'),1n);

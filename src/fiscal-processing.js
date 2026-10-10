@@ -26,7 +26,8 @@ export async function processFiscalDocument(client,document,adapter,now=Date.now
   if (document.status==='AUTHORIZED') {adapter.load(document.authorized_xml);await makePdf();return 'AUTHORIZED';}
   let firstSend=false;
   if (document.status==='PENDING') {
-    if (now-Date.parse(document.snapshot.sale.occurredAt)>300000) throw fiscalError('OFFLINE_FISCAL_FLOW_REQUIRED');
+    if (now-Date.parse(document.snapshot.sale.issuedAt ?? document.snapshot.sale.occurredAt)>300000)
+      throw fiscalError('OFFLINE_FISCAL_FLOW_REQUIRED');
     const xml=adapter.sign(document.ini_payload);
     if (!xml?.includes(`Id="NFe${document.access_key}"`) || !/<(?:\w+:)?Signature\b/.test(xml))
       throw fiscalError('SIGNED_XML_KEY_MISMATCH');

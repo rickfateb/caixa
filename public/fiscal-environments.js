@@ -1,9 +1,9 @@
 let fiscalEnvironmentState=null,fiscalPolicyDirty=false;
 const fiscalWeekdays=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-const fiscalEnvironmentLabel=value=>value===1?'Oficial':'Homologação';
+const fiscalEnvironmentLabel=value=>({0:'Desabilitado',1:'Oficial',2:'Homologação'})[value]||'Não configurado';
 const fiscalEnvironmentOptions=(value,inherit=false)=>
   (inherit?`<option value="" ${value==null?'selected':''}>Padrão do serviço</option>`:'')+
-  [1,2].map(v=>`<option value="${v}" ${value===v?'selected':''}>${fiscalEnvironmentLabel(v)}</option>`).join('');
+  [1,2,0].map(v=>`<option value="${v}" ${value===v?'selected':''}>${fiscalEnvironmentLabel(v)}</option>`).join('');
 function fiscalPolicyMessage(code) {
   return ({FISCAL_SCHEDULE_OVERLAP:'Há agendas sobrepostas para os mesmos caixas. Ajuste os dias, horários ou destinos.',
     FISCAL_POLICY_CHANGED:'Outro administrador alterou a configuração. Atualize a aba antes de salvar novamente.',
@@ -20,15 +20,15 @@ function renderFiscalEnvironments() {
   const data=fiscalEnvironmentState;if(!data)return;
   const config=data.config,isAdmin=me.role==='ADMINISTRADOR';
   const sources={SERVICE_DEFAULT:'Padrão do serviço',REGISTER_DEFAULT:'Padrão do caixa',SCHEDULE:'Agenda',EXISTING_DOCUMENT:'Documento anterior'};
-  $('fiscal-environments').innerHTML=`<div class="heading"><div><h3>Ambientes e agendas</h3><p>Oficial ou homologação por maquininha/PDV. Horários de Brasília.</p></div>${isAdmin?'<button id="fiscal-save-policy" '+(!fiscalPolicyDirty?'disabled':'')+'>Salvar ambientes e agendas</button>':''}</div>
-    <p class="info">Homologação gera cupons sem valor fiscal para vendas de teste. A seleção de Oficial fica registrada; a emissão de produção aguarda validação fiscal.</p>
+  $('fiscal-environments').innerHTML=`<div class="heading"><div><h3>Ambientes e agendas</h3><p>Oficial, Homologação ou Desabilitado por maquininha/PDV. Horários de Brasília.</p></div>${isAdmin?'<button id="fiscal-save-policy" '+(!fiscalPolicyDirty?'disabled':'')+'>Salvar ambientes e agendas</button>':''}</div>
+    <p class="info">Desabilitado recebe as vendas sem gerar cupons automaticamente. Abra a venda para gerar manualmente e escolher o ambiente. Homologação gera cupons de teste sem valor fiscal. Oficial aguarda validação para emissão real.</p>
     <p class="fiscal-dirty" role="status">${fiscalPolicyDirty?'Há alterações ainda não salvas. A prévia abaixo mostra a configuração salva.':'Configuração salva.'}</p>
     <div class="row"><label>Ambiente padrão do serviço<select id="fiscal-service-environment" ${!isAdmin?'disabled':''}>${fiscalEnvironmentOptions(config.defaultEnvironment)}</select></label>
     <label>Consultar ambiente em Brasília<input id="fiscal-preview-time" type="datetime-local"></label><button id="fiscal-preview" class="secondary">Ver prévia</button></div>
     <p>Prévia: ${safe(new Date(data.previewAt).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}. A prévia não altera o serviço.</p>`+
     table(['Loja','Maquininha / PDV','Ambiente padrão','Ambiente na prévia','Regra aplicada'],data.registers.map(r=>`<tr><td>${safe(r.unit_name)}</td><td>${safe(r.name)}${r.external_number?'<br>'+safe(r.external_number):''}${!r.active?'<br>Inativo':''}</td>
       <td><select aria-label="Ambiente de ${safe(r.name)}" data-fiscal-register="${r.id}" ${!isAdmin?'disabled':''}>${fiscalEnvironmentOptions(config.registerEnvironments[String(r.id)]??null,true)}</select></td>
-      <td><span class="fiscal-badge ${r.effective.environment===1?'official':'homologation'}">${fiscalEnvironmentLabel(r.effective.environment)}${r.effective.environment===1?' · pendente':''}</span></td>
+      <td><span class="fiscal-badge ${{0:'disabled',1:'official',2:'homologation'}[r.effective.environment]}">${fiscalEnvironmentLabel(r.effective.environment)}${r.effective.environment===1?' · pendente':''}</span></td>
       <td>${safe(r.effective.scheduleName||sources[r.effective.source])}</td></tr>`))+
     `<div class="heading fiscal-agenda-heading"><div><h3>Agendas de ambiente</h3><p>Uma agenda para caixas selecionados prevalece sobre uma agenda para todos. Fora das janelas, vale o padrão de cada caixa.</p></div>${isAdmin?'<button id="fiscal-new-schedule" class="secondary">Nova agenda</button>':''}</div>`+
     table(['Agenda','Dias / horário','Vigência','Destino','Ambiente',''],config.schedules.map(s=>`<tr><td>${safe(s.name)}<br>${s.enabled?'Ativa':'Desativada'}</td><td>${s.weekdays.map(d=>fiscalWeekdays[d]).join(', ')}<br>${s.allDay?'Dia todo':safe(s.startTime)+' às '+safe(s.endTime)+(s.endTime<s.startTime?' (dia seguinte)':'')}</td>

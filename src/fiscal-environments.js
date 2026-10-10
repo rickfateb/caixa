@@ -3,7 +3,8 @@ import {fiscalError} from './fiscal-core.js';
 export const FISCAL_TIME_ZONE='America/Sao_Paulo';
 export const DEFAULT_FISCAL_POLICY={defaultEnvironment:2,registerEnvironments:{},schedules:[]};
 const DAY_MS=86400000;
-const environment=value=>value===1 || value===2;
+// 0 pauses automatic issuance; it is never used as XML tpAmb.
+const environment=value=>value===0 || value===1 || value===2;
 const fail=(ok,code)=>{if(!ok)throw fiscalError(code);};
 const object=value=>value && typeof value==='object' && !Array.isArray(value);
 function registerId(value) {
@@ -125,8 +126,8 @@ export async function readFiscalPolicy(client) {
 export async function currentFiscalEnvironment(client,id,now=Date.now()) {
   const policy=await readFiscalPolicy(client);
   const route=resolveFiscalEnvironment(policy.config,id,now,policy.revision);
-  return {...route,productionEnabled:false,
-    readiness:route.environment===1?'PRODUCTION_NOT_READY':'HOMOLOGATION'};
+  return {...route,productionEnabled:false,automaticIssuanceEnabled:route.environment!==0,
+    readiness:route.environment===0?'DISABLED':route.environment===1?'PRODUCTION_NOT_READY':'HOMOLOGATION'};
 }
 
 // Only the first accepted sale resolves the clock. Replays and workers use this persisted decision.

@@ -92,21 +92,38 @@ export function installFiscalRoutes(app,pool,{requireGoogle,admin,requireRegiste
     if (req.query.unitId && !id(req.query.unitId)) throw fiscalError('INVALID_UNIT');
     const rows=(await pool.query(`SELECT d.id,e.sale_id,e.decision,d.status,d.series,d.number,d.access_key,d.protocol,
       d.sefaz_code,d.sefaz_message,d.qr_code,d.last_error,d.updated_at,
+      m.environment AS manual_environment,m.requested_at AS manual_requested_at,
       (d.danfe_pdf IS NOT NULL) AS danfe_available,u.name AS unit_name,s.client_sale_id FROM fiscal_sale_environments e
       JOIN sales s ON s.id=e.sale_id JOIN units u ON u.id=s.unit_id
       LEFT JOIN fiscal_documents d ON d.sale_id=e.sale_id AND d.environment=2
+      LEFT JOIN fiscal_manual_requests m ON m.sale_id=e.sale_id
       WHERE ($1::bigint IS NULL OR s.unit_id=$1) ORDER BY e.sale_id DESC LIMIT 100`,[req.query.unitId || null])).rows;
-    res.json(rows.map(row=>({...publicFiscal(row.id==null?null:row,row.decision),
+    res.json(rows.map(row=>({...publicFiscal(row.id==null?null:row,row.decision,row.manual_environment==null?null:
+      {environment:row.manual_environment,requested_at:row.manual_requested_at}),
       saleId:row.sale_id,unitName:row.unit_name,clientSaleId:row.client_sale_id})));
+  }));
+  app.get('/api/admin/fiscal/sales/:id',requireGoogle,handler(async(req,res) => {
+    if(!id(req.params.id))throw fiscalError('INVALID_ID');
+    const sale=(await pool.query('SELECT source,status FROM sales WHERE id=$1',[req.params.id])).rows[0];
+    if(!sale)throw fiscalError('SALE_NOT_FOUND',404);
+    if(sale.source!=='POS' || sale.status!=='APPROVED')
+      return res.json({status:'NOT_APPLICABLE',canGenerate:false,hasFiscalValue:false});
+    res.json(await fiscalForSale(pool,req.params.id));
   }));
   app.post('/api/admin/fiscal/sales/:id/prepare',requireGoogle,admin,handler(async(req,res) => {
     if (!id(req.params.id)) throw fiscalError('INVALID_ID');
+    if(!req.body || typeof req.body!=='object' || Array.isArray(req.body) ||
+      Object.keys(req.body).some(key=>key!=='environment') ||
+      (Object.hasOwn(req.body,'environment') && ![1,2].includes(req.body.environment)))
+      throw fiscalError('INVALID_MANUAL_FISCAL_ENVIRONMENT');
     const client=await pool.connect();
     try {
       await client.query('BEGIN');
-      const document=await enqueueFiscal(client,req.params.id,{retryBlocked:true});
-      await audit(client,req.user.email,'FISCAL_PREPARE','sales',req.params.id,
-        {status:document.status,environment:document.requestedEnvironment});
+      const document=await enqueueFiscal(client,req.params.id,{retryBlocked:true,
+        manualEnvironment:req.body.environment,actor:req.user.email});
+      await audit(client,req.user.email,req.body.environment===undefined?'FISCAL_PREPARE':'FISCAL_MANUAL_REQUESTED',
+        'sales',req.params.id,{status:document.status,environment:document.requestedEnvironment,
+          automaticEnvironment:document.automaticEnvironment,documentId:document.id || null});
       await client.query('COMMIT');res.json(document);
     } catch(error) {await client.query('ROLLBACK');throw error;} finally {client.release();}
   }));
