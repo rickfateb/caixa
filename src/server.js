@@ -60,6 +60,7 @@ async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/009_center_banners.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/010_fiscal_homologation.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/011_fiscal_environments.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/012_fiscal_disabled.sql'), 'utf8'));
   await pool.query("UPDATE media_jobs SET status='PENDING',started_at=NULL WHERE status='RUNNING'");
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);

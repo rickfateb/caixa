@@ -11,7 +11,7 @@ import {canonicalJson,digest} from '../src/fiscal-core.js';
 
 async function database() {
   const db=new PGlite();
-  for (const path of ['001_initial','002_promotions','003_units','004_sales_saurus','005_media_pos','006_sync_dispatch','010_fiscal_homologation','011_fiscal_environments'])
+  for (const path of ['001_initial','002_promotions','003_units','004_sales_saurus','005_media_pos','006_sync_dispatch','010_fiscal_homologation','011_fiscal_environments','012_fiscal_disabled'])
     await db.exec(readFileSync(new URL(`../sql/${path}.sql`,import.meta.url),'utf8'));
   await db.exec(`INSERT INTO units(name,acronym) VALUES('LOJA TESTE','T1'),('OUTRA LOJA','T2');
     INSERT INTO products(description,ncm) VALUES('TESTE','19021900');
@@ -31,11 +31,19 @@ async function addSale(db,id=1) {
   await db.query(`INSERT INTO sale_payments(sale_id,line_number,method,amount_cents,simulated)
     VALUES($1,1,'PIX',698,true)`,[id]);
 }
+async function prepare(db,id,options) {
+  await db.query('BEGIN');
+  try {const result=await enqueueFiscal(db,id,options);await db.query('COMMIT');return result;}
+  catch(error){await db.query('ROLLBACK');throw error;}
+}
+const disableAutomatic=db=>db.query('UPDATE fiscal_environment_policy SET config=$1',
+  [JSON.stringify({...DEFAULT_FISCAL_POLICY,defaultEnvironment:0})]);
 test('Postgres migrations are idempotent and reject production or duplicate fiscal numbering',async()=>{
   const db=await database();
   try {
     await db.exec(readFileSync(new URL('../sql/010_fiscal_homologation.sql',import.meta.url),'utf8'));
     await db.exec(readFileSync(new URL('../sql/011_fiscal_environments.sql',import.meta.url),'utf8'));
+    await db.exec(readFileSync(new URL('../sql/012_fiscal_disabled.sql',import.meta.url),'utf8'));
     await assert.rejects(()=>db.query(`INSERT INTO fiscal_issuers(unit_id,cnpj,environment,series,next_number,config,reviewed_by)
       VALUES(2,$1,1,1,1,'{}','TEST')`,[issuer.cnpj]),error=>error.code==='23514');
     await assert.rejects(()=>db.query(`INSERT INTO fiscal_issuers(unit_id,cnpj,series,next_number,config,reviewed_by)
@@ -183,5 +191,145 @@ test('PDV can only consult its own sale, and unauthorized users cannot configure
       assert.equal((await fetch(base+`/api/v1/sales/test-sale-1/fiscal/${type}`,
         {headers:{Authorization:'Bearer OTHER'}})).status,404);
     }
+  } finally {if(server)await new Promise(resolve=>server.close(resolve));await db.close();}
+});
+
+test('disabled sales reserve no number; agenda/configuration changes and all replays keep them disabled',async()=>{
+  const db=await database();
+  try {
+    await addSale(db);await addSale(db,2);await disableAutomatic(db);
+    const first=await prepare(db,1,{now});
+    assert.equal(first.status,'DISABLED');assert.equal(first.issue,'AUTOMATIC_FISCAL_DISABLED');
+    assert.equal(first.requestedEnvironment,0);assert.equal(first.environment,null);
+    assert.equal(first.automaticIssuanceEnabled,false);assert.equal(first.canGenerate,true);
+    await db.query('UPDATE fiscal_environment_policy SET config=$1,revision=2',[JSON.stringify(DEFAULT_FISCAL_POLICY)]);
+    assert.deepEqual(await prepare(db,1,{now:now+86400000,retryBlocked:true}),first);
+    assert.deepEqual(await fiscalForSale(db,1),first);
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_documents')).rows[0].count,0);
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_manual_requests')).rows[0].count,0);
+    assert.equal((await db.query('SELECT next_number FROM fiscal_issuers')).rows[0].next_number,1);
+    assert.equal((await prepare(db,2,{now})).status,'PENDING');
+  } finally {await db.close();}
+});
+test('explicit manual generation creates one current-date coupon and preserves the disabled routing',async()=>{
+  const db=await database();
+  try {
+    await addSale(db);await disableAutomatic(db);await prepare(db,1,{now});
+    const options={now:now+86400000,manualEnvironment:2,actor:'ADMIN TEST',retryBlocked:true};
+    const first=await prepare(db,1,options);
+    assert.equal(first.status,'PENDING',first.issue);assert.equal(first.canGenerate,false);
+    assert.equal(first.requestedEnvironment,2);assert.equal(first.automaticEnvironment,0);assert.equal(first.environment,2);
+    assert.equal(first.automaticIssuanceEnabled,false);assert.equal(first.routing.environment,0);
+    const repeat=await prepare(db,1,options);assert.equal(first.id,repeat.id);assert.equal(first.accessKey,repeat.accessKey);
+    assert.deepEqual(await prepare(db,1,{now:now+86400000}),repeat);
+    const row=(await db.query('SELECT snapshot,snapshot_hash,ini_payload FROM fiscal_documents')).rows[0];
+    assert.equal(row.snapshot.routing.environment,2);assert.equal(row.snapshot.routing.source,'MANUAL');
+    assert.equal(row.snapshot.automaticRouting.environment,0);
+    assert.equal(row.snapshot.sale.occurredAt,'2026-10-09T17:59:00.000Z');
+    assert.equal(row.snapshot.sale.issuedAt,'2026-10-10T18:00:00.000Z');
+    assert.match(row.ini_payload,/dhEmi=10\/10\/2026 15:00:00/);assert.match(row.ini_payload,/tpAmb=2/);
+    assert.equal(digest(canonicalJson(row.snapshot)),row.snapshot_hash);
+    assert.equal((await db.query('SELECT next_number FROM fiscal_issuers')).rows[0].next_number,2);
+    assert.equal((await db.query('SELECT requested_by FROM fiscal_manual_requests')).rows[0].requested_by,'ADMIN TEST');
+    await db.exec(readFileSync(new URL('../sql/011_fiscal_environments.sql',import.meta.url),'utf8'));
+    await db.exec(readFileSync(new URL('../sql/012_fiscal_disabled.sql',import.meta.url),'utf8'));
+    assert.equal((await fiscalForSale(db,1)).routing.environment,0);
+    await assert.rejects(()=>db.query('UPDATE fiscal_documents SET environment=0'),error=>error.code==='23514');
+    await assert.rejects(()=>db.query('UPDATE fiscal_manual_requests SET environment=0'),error=>error.code==='23514');
+  } finally {await db.close();}
+});
+test('manual production, invalid environments and attempts to override automatic modes never allocate a number',async()=>{
+  const db=await database();
+  try {
+    await addSale(db);await disableAutomatic(db);await prepare(db,1,{now});
+    await assert.rejects(()=>prepare(db,1,{now,manualEnvironment:1,actor:'ADMIN'}),/PRODUCTION_NOT_READY/);
+    for(const manualEnvironment of [0,3,'2',true])
+      await assert.rejects(()=>prepare(db,1,{now,manualEnvironment,actor:'ADMIN'}),/INVALID_MANUAL_FISCAL_ENVIRONMENT/);
+    await assert.rejects(()=>prepare(db,1,{now,manualEnvironment:2}),/FISCAL_MANUAL_ACTOR_REQUIRED/);
+    await addSale(db,2);await addSale(db,3);
+    await db.query('UPDATE fiscal_environment_policy SET config=$1',[JSON.stringify({...DEFAULT_FISCAL_POLICY,defaultEnvironment:1})]);
+    await assert.rejects(()=>prepare(db,2,{now,manualEnvironment:2,actor:'ADMIN'}),/MANUAL_FISCAL_ONLY_WHEN_DISABLED/);
+    await db.query('UPDATE fiscal_environment_policy SET config=$1',[JSON.stringify(DEFAULT_FISCAL_POLICY)]);
+    await assert.rejects(()=>prepare(db,3,{now,manualEnvironment:2,actor:'ADMIN'}),/MANUAL_FISCAL_ONLY_WHEN_DISABLED/);
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_documents')).rows[0].count,0);
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_manual_requests')).rows[0].count,0);
+    assert.equal((await db.query('SELECT next_number FROM fiscal_issuers')).rows[0].next_number,1);
+  } finally {await db.close();}
+});
+test('manual pending configuration/classification requires another manual action after it is fixed',async()=>{
+  const db=await database();
+  try {
+    await addSale(db);await disableAutomatic(db);await prepare(db,1,{now});
+    const options={now,manualEnvironment:2,actor:'ADMIN',retryBlocked:true};
+    await db.exec('UPDATE fiscal_issuers SET enabled=false');
+    const disabled=await prepare(db,1,options);
+    assert.equal(disabled.status,'BLOCKED');assert.equal(disabled.issue,'FISCAL_ISSUER_NOT_ENABLED');
+    assert.equal(disabled.canGenerate,true);assert.equal(disabled.manualRequest.environment,2);
+    await db.exec('UPDATE fiscal_issuers SET enabled=true; DELETE FROM fiscal_product_profiles');
+    assert.equal((await prepare(db,1,{now,retryBlocked:true})).id,undefined);
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_documents')).rows[0].count,0);
+    const blocked=await prepare(db,1,options);
+    assert.equal(blocked.status,'BLOCKED');assert.equal(blocked.number,null);assert.equal(blocked.canGenerate,true);
+    await db.query(`INSERT INTO fiscal_product_profiles(issuer_id,product_id,profile,reviewed_by)
+      VALUES(1,1,$1,'ADMIN TEST')`,[JSON.stringify(profile)]);
+    assert.equal((await prepare(db,1,{now,retryBlocked:true})).status,'BLOCKED');
+    assert.equal((await db.query('SELECT next_number FROM fiscal_issuers')).rows[0].next_number,1);
+    const ready=await prepare(db,1,options);
+    assert.equal(ready.id,blocked.id);assert.equal(ready.status,'PENDING');assert.equal(ready.number,1);
+  } finally {await db.close();}
+});
+test('manual transaction rollback removes the request and document, leaving the sale disabled',async()=>{
+  const db=await database();
+  try {
+    await addSale(db);await disableAutomatic(db);const disabled=await prepare(db,1,{now});
+    await db.query('BEGIN');await enqueueFiscal(db,1,{now,manualEnvironment:2,actor:'ADMIN'});await db.query('ROLLBACK');
+    assert.deepEqual(await fiscalForSale(db,1),disabled);
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_manual_requests')).rows[0].count,0);
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_documents')).rows[0].count,0);
+    assert.equal((await db.query('SELECT next_number FROM fiscal_issuers')).rows[0].next_number,1);
+    await db.exec("UPDATE sales SET status='CANCELLED' WHERE id=1");
+    assert.equal((await prepare(db,1,{now,manualEnvironment:2,actor:'ADMIN'})).status,'NOT_APPLICABLE');
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_manual_requests')).rows[0].count,0);
+  } finally {await db.close();}
+});
+test('portal reads are passive; manual endpoints require an admin and audit one idempotent sale request',async({mock})=>{
+  const db=await database();let server;
+  try {
+    await addSale(db);await disableAutomatic(db);await prepare(db,1,{now});
+    mock.method(Date,'now',()=>now+86400000);
+    const app=express();app.use(express.json());
+    const authGoogle=(req,_res,next)=>{req.user={email:'ADMIN TEST',role:req.get('authorization')==='Bearer ADMIN'?'ADMINISTRADOR':'COLABORADOR'};next();};
+    const admin=(req,res,next)=>req.user.role==='ADMINISTRADOR'?next():res.status(403).json({error:'ADMIN_REQUIRED'});
+    const audits=[],pool={query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release:()=>{}})};
+    installFiscalRoutes(app,pool,{requireGoogle:authGoogle,admin,
+      requireRegister:(req,_res,next)=>{req.register={id:1};next();},audit:async(...args)=>audits.push(args.slice(1))});
+    app.use((error,_req,res,_next)=>res.status(error.status||500).json({error:error.message}));
+    server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+    const base=`http://127.0.0.1:${server.address().port}`;
+    const request=(body,authorized=true)=>fetch(base+'/api/admin/fiscal/sales/1/prepare',{method:'POST',
+      headers:{'Content-Type':'application/json',Authorization:authorized?'Bearer ADMIN':'Bearer READER'},body:JSON.stringify(body)});
+    const disabled=await (await fetch(base+'/api/admin/fiscal/sales/1')).json();
+    assert.equal(disabled.status,'DISABLED');assert.equal(disabled.canGenerate,true);
+    const preview=await (await fetch(base+'/api/admin/fiscal/environments')).json();
+    assert.equal(preview.config.defaultEnvironment,0);assert.equal(preview.registers[0].effective.environment,0);
+    const mode=await (await fetch(base+'/api/v1/fiscal/environment')).json();
+    assert.equal(mode.environment,0);assert.equal(mode.automaticIssuanceEnabled,false);assert.equal(mode.readiness,'DISABLED');
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_manual_requests')).rows[0].count,0);
+    assert.equal((await request({environment:2},false)).status,403);
+    assert.equal((await request({environment:0})).status,422);
+    assert.equal((await request({environment:1})).status,409);
+    assert.equal((await request({environment:2,actor:'IMPOSTOR'})).status,422);
+    assert.equal((await request({})).status,200);
+    assert.equal((await db.query('SELECT count(*) AS count FROM fiscal_documents')).rows[0].count,0);
+    const response=await request({environment:2});assert.equal(response.status,200);const first=await response.json();
+    assert.equal(first.status,'PENDING',first.issue);
+    const repeat=await (await request({environment:2})).json();assert.equal(repeat.id,first.id);
+    assert.equal((await db.query('SELECT next_number FROM fiscal_issuers')).rows[0].next_number,2);
+    const record=audits.find(a=>a[1]==='FISCAL_MANUAL_REQUESTED');
+    assert.equal(record[0],'ADMIN TEST');assert.equal(record[4].automaticEnvironment,0);assert.equal(record[4].environment,2);
+    const docs=await (await fetch(base+'/api/admin/fiscal/documents')).json();
+    assert.equal(docs[0].automaticEnvironment,0);assert.equal(docs[0].manualRequest.environment,2);
+    assert.equal((await (await fetch(base+'/api/admin/fiscal/sales/1')).json()).id,first.id);
+    assert.equal((await fetch(base+'/api/admin/fiscal/sales/999')).status,404);
   } finally {if(server)await new Promise(resolve=>server.close(resolve));await db.close();}
 });

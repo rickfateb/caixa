@@ -51,7 +51,7 @@ test('whole-day agendas cover midnight through the next midnight and require an 
 });
 test('invalid environments, unknown PDVs and empty selection days are refused',()=>{
   reject(config({defaultEnvironment:'1'}),'INVALID_FISCAL_POLICY');
-  reject(config({registerEnvironments:{'1':0}}),'INVALID_FISCAL_ENVIRONMENT');
+  reject(config({registerEnvironments:{'1':3}}),'INVALID_FISCAL_ENVIRONMENT');
   reject(config({schedules:[rule({weekdays:[]})]}),'INVALID_FISCAL_SCHEDULE_DAYS');
   assert.throws(()=>validateFiscalPolicy(config({schedules:[rule({registerIds:['2']})]}),new Set(['1'])),
     e=>e.message==='FISCAL_REGISTER_NOT_FOUND');
@@ -83,4 +83,35 @@ test('an ambiguous stored configuration blocks resolution rather than choosing a
   const c=config({schedules:[rule(),rule({id:'bad-direct-db-edit',environment:1})]});
   assert.throws(()=>resolveFiscalEnvironment(c,'1',Date.parse('2026-10-09T09:00:00-03:00')),
     e=>e.message==='FISCAL_SCHEDULE_OVERLAP');
+});
+
+test('disabled service/PDV defaults and schedules participate in the same precedence rules',()=>{
+  const c=config({defaultEnvironment:0,registerEnvironments:{'1':2},schedules:[
+    rule({environment:1}),rule({id:'pause',environment:0,registerIds:['2']})]});
+  assert.equal(at(c,'2026-10-09T07:59:59-03:00','1').environment,2);
+  assert.equal(at(c,'2026-10-09T07:59:59-03:00','2').environment,0);
+  assert.equal(at(c,'2026-10-09T08:00:00-03:00','1').environment,1);
+  assert.equal(at(c,'2026-10-09T08:00:00-03:00','2').environment,0);
+  assert.equal(at(c,'2026-10-09T08:00:00-03:00','2').scheduleId,'pause');
+  assert.equal(at(c,'2026-10-09T10:00:00-03:00','1').environment,2);
+  assert.equal(at(c,'2026-10-09T10:00:00-03:00','2').environment,0);
+  reject(config({schedules:[rule({environment:0}),rule({id:'conflict',environment:2})]}),'FISCAL_SCHEDULE_OVERLAP');
+});
+test('disabled overnight agenda targets only selected PDVs and resumes at the end boundary',()=>{
+  const c=config({defaultEnvironment:1,schedules:[rule({environment:0,registerIds:['1'],
+    startTime:'22:00',endTime:'02:00',startsOn:'2026-10-09',endsOn:'2026-10-09'})]});
+  assert.equal(at(c,'2026-10-09T22:00:00-03:00','1').environment,0);
+  assert.equal(at(c,'2026-10-10T01:59:59-03:00','1').environment,0);
+  assert.equal(at(c,'2026-10-10T01:59:59-03:00','2').environment,1);
+  assert.equal(at(c,'2026-10-10T02:00:00-03:00','1').environment,1);
+});
+test('whole-day disabled agenda can pause all PDVs within its validity dates',()=>{
+  const c=config({schedules:[rule({environment:0,allDay:true,startsOn:'2026-10-09',endsOn:'2026-10-09'})]});
+  for(const id of ['1','2']) {
+    assert.equal(at(c,'2026-10-09T00:00:00-03:00',id).environment,0);
+    assert.equal(at(c,'2026-10-09T23:59:59-03:00',id).environment,0);
+    assert.equal(at(c,'2026-10-10T00:00:00-03:00',id).environment,2);
+  }
+  reject(config({defaultEnvironment:-1}),'INVALID_FISCAL_POLICY');
+  reject(config({schedules:[rule({environment:'0'})]}),'INVALID_FISCAL_ENVIRONMENT');
 });

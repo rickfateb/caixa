@@ -1,18 +1,80 @@
+const fiscalStatusLabels={DISABLED:'Sem emissão automática',BLOCKED:'Emissão bloqueada',PENDING:'Na fila',
+  SIGNED:'Assinada',SUBMITTING:'Enviando',UNKNOWN:'Consultando SEFAZ',AUTHORIZED:'Autorizada em teste',
+  REJECTED:'Rejeitada',MANUAL:'Revisar',NOT_APPLICABLE:'Cupom não disponível para esta venda'};
+const fiscalIssueMessages={NCM_REQUIRED:'Classificação fiscal do produto pendente.',
+  PRODUCT_FISCAL_MAPPING_REQUIRED:'Produto sem vínculo fiscal.',
+  OFFLINE_FISCAL_FLOW_REQUIRED:'Venda fora do prazo de emissão automática; revisar a operação offline.',
+  FISCAL_RUNTIME_NOT_CONFIGURED:'Certificado e emissor de teste aguardam configuração.',
+  DANFE_GENERATION_PENDING:'Cupom autorizado em teste; PDF pendente.',
+  RTC_PROFILE_REQUIRED_FOR_2027:'Regras fiscais de 2027 aguardam atualização.',
+  PRODUCTION_NOT_READY:'Ambiente oficial escolhido; emissão real aguarda validação.',
+  FISCAL_ENVIRONMENT_CHANGED:'O ambiente mudou antes do recebimento. Revisar; nenhum cupom foi emitido.',
+  INVALID_FISCAL_ENVIRONMENT:'O caixa informou um ambiente fiscal inválido.',
+  AUTOMATIC_FISCAL_DISABLED:'Esta venda foi recebida como Desabilitado. Nenhum cupom foi gerado automaticamente.',
+  FISCAL_ISSUER_NOT_ENABLED:'Não há emitente de homologação ativo para esta unidade.',
+  INVALID_MANUAL_FISCAL_ENVIRONMENT:'Escolha um ambiente válido para gerar o cupom.',
+  MANUAL_FISCAL_ONLY_WHEN_DISABLED:'A geração manual está disponível para vendas recebidas como Desabilitado.',
+  FISCAL_MANUAL_ENVIRONMENT_CHANGED:'Já existe uma solicitação para esta venda em outro ambiente.',
+  LOGIN_REQUIRED:'Entre novamente no portal para continuar.',ADMIN_REQUIRED:'Somente administradores podem gerar cupons.'};
+const fiscalIssueMessage=code=>fiscalIssueMessages[code]||code||'';
+const fiscalFiles=d=>d.status==='AUTHORIZED'?`<button class="secondary" data-fiscal-file="${safe(d.id)}" data-type="xml">XML</button> ${d.danfeAvailable?`<button class="secondary" data-fiscal-file="${safe(d.id)}" data-type="pdf">Ver cupom PDF</button>`:''}`:'';
+const fiscalRoutingLabel=d=>d.automaticEnvironment===0?'Desabilitado'+
+  (d.manualRequest?' · manual em '+fiscalEnvironmentLabel(d.requestedEnvironment):''):
+  fiscalEnvironmentLabel(d.requestedEnvironment);
+
+async function fiscalDownload(button) {
+  const response=await fetch(`/api/admin/fiscal/documents/${button.dataset.fiscalFile}/${button.dataset.type}`,
+    {headers:{Authorization:`Bearer ${token}`}});
+  if(!response.ok)throw Error('Arquivo fiscal ainda indisponível.');
+  const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
+  link.href=url;link.download=`nfce-homologacao-${button.dataset.fiscalFile}.${button.dataset.type}`;
+  document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+async function loadSaleFiscal(host,saleId) {
+  try {renderSaleFiscal(host,saleId,await api(`/api/admin/fiscal/sales/${saleId}`));}
+  catch(error){host.innerHTML=`<h3>Cupom fiscal</h3><p class="error">${safe(fiscalIssueMessage(error.message))}</p><button class="secondary" data-fiscal-refresh>Atualizar cupom</button>`;
+    host.querySelector('[data-fiscal-refresh]').onclick=()=>loadSaleFiscal(host,saleId);}
+}
+function renderSaleFiscal(host,saleId,d) {
+  const generate=d.canGenerate && me.role==='ADMINISTRADOR';
+  host.innerHTML=`<div class="heading"><h3>Cupom fiscal</h3><button class="secondary" data-fiscal-refresh>Atualizar cupom</button></div>
+    <p><strong>${safe(fiscalStatusLabels[d.status]||d.status)}</strong>${d.requestedEnvironment==null?'':' · '+safe(fiscalRoutingLabel(d))}</p>
+    <p>${safe(d.message||fiscalIssueMessage(d.issue))}</p>
+    ${d.number?`<p>Série ${safe(d.series)} · Número ${safe(d.number)}</p>`:''}
+    ${d.manualRequest?'<p>A geração manual foi solicitada. Atualizações consultam o mesmo cupom.</p>':''}
+    ${fiscalFiles(d)}
+    ${generate?`<form class="row" data-fiscal-generate-form><label>Ambiente para gerar<select name="environment" required ${d.manualRequest?'disabled':''}>
+      <option value="" disabled ${!d.manualRequest?'selected':''}>Escolha o ambiente</option>
+      <option value="2" ${d.manualRequest?.environment===2?'selected':''}>Homologação — sem valor fiscal</option>
+      <option value="1" disabled>Oficial — emissão pendente de validação</option></select></label>
+      <button type="submit">Gerar cupom</button></form>
+      <p>O cupom de teste usa a data e hora da geração; a data original da venda é preservada.</p>`:
+      d.canGenerate?'<p>Um administrador pode gerar o cupom desta venda.</p>':''}
+    <p class="error" data-fiscal-error role="alert"></p>`;
+  host.querySelector('[data-fiscal-refresh]').onclick=()=>loadSaleFiscal(host,saleId);
+  host.onclick=async event=>{
+    const file=event.target.closest('[data-fiscal-file]');if(!file)return;
+    try{await fiscalDownload(file);}catch(error){host.querySelector('[data-fiscal-error]').textContent=fiscalIssueMessage(error.message);}
+  };
+  const form=host.querySelector('[data-fiscal-generate-form]');
+  if(form)form.onsubmit=async event=>{
+    event.preventDefault();const button=form.querySelector('[type="submit"]');button.disabled=true;
+    try {
+      const environment=d.manualRequest?.environment ?? Number(form.elements.environment.value);
+      const result=await send(`/api/admin/fiscal/sales/${saleId}/prepare`,'POST',{environment});
+      renderSaleFiscal(host,saleId,result);
+    } catch(error){host.querySelector('[data-fiscal-error]').textContent=fiscalIssueMessage(error.message);}
+    finally{button.disabled=false;}
+  };
+}
+
 async function loadFiscal() {
   const [issuers,documents,policy]=await Promise.all([api('/api/admin/fiscal/issuers'),api('/api/admin/fiscal/documents'),
     api('/api/admin/fiscal/environments')]);
   fiscalEnvironmentState=policy;fiscalPolicyDirty=false;renderFiscalEnvironments();
   $('fiscal-issuers').innerHTML=`<h3>Emitentes por loja</h3>${me.role==='ADMINISTRADOR'?'<button id="new-fiscal-issuer">Cadastrar emitente de teste</button>':''}` +
     table(['Loja','CNPJ','Série','Próximo número','Situação',''],issuers.map(i=>`<tr><td>${safe(i.unit_name)}</td><td>${safe(i.cnpj)}</td><td>${i.series}</td><td>${i.next_number}</td><td>${i.enabled?'Ativo em homologação':'Desativado'}</td><td>${me.role==='ADMINISTRADOR'?`<button data-fiscal-profile="${i.id}" class="secondary">Classificar produto</button> <button data-fiscal-toggle="${i.id}" data-enabled="${!i.enabled}" class="secondary">${i.enabled?'Desativar':'Ativar testes'}</button>`:''}</td></tr>`));
-  const labels={DISABLED:'Emissor desativado',BLOCKED:'Emissão bloqueada',PENDING:'Na fila',SIGNED:'Assinada',SUBMITTING:'Enviando',UNKNOWN:'Consultando SEFAZ',AUTHORIZED:'Autorizada em teste',REJECTED:'Rejeitada',MANUAL:'Revisar'};
-  const issues={NCM_REQUIRED:'Classificação fiscal do produto pendente.',PRODUCT_FISCAL_MAPPING_REQUIRED:'Produto sem vínculo fiscal.',
-    OFFLINE_FISCAL_FLOW_REQUIRED:'Venda fora do prazo de emissão normal; revisar a operação offline.',
-    FISCAL_RUNTIME_NOT_CONFIGURED:'Certificado e emissor de teste aguardam configuração.',
-    DANFE_GENERATION_PENDING:'Cupom autorizado em teste; PDF pendente.',RTC_PROFILE_REQUIRED_FOR_2027:'Regras fiscais de 2027 aguardam atualização.',
-    PRODUCTION_NOT_READY:'Ambiente oficial escolhido; emissão real aguarda validação.',
-    FISCAL_ENVIRONMENT_CHANGED:'O ambiente mudou antes do recebimento. Revisar o teste; nenhum cupom foi emitido.',
-    INVALID_FISCAL_ENVIRONMENT:'O caixa informou um ambiente fiscal inválido.'};
-  $('fiscal-documents').innerHTML=table(['Loja','Venda','Ambiente escolhido','Série / número','Situação','Retorno','Arquivos'],documents.map(d=>`<tr><td>${safe(d.unitName)}</td><td>${safe(d.saleId)}</td><td>${d.requestedEnvironment===1?'Oficial':'Homologação'}</td><td>${safe(d.series||'—')} / ${safe(d.number||'Pendente')}</td><td>${safe(labels[d.status]||d.status)}</td><td>${safe(d.message||issues[d.issue]||d.issue||'')}</td><td>${d.status==='AUTHORIZED'?`<button class="secondary" data-fiscal-file="${d.id}" data-type="xml">XML</button> ${d.danfeAvailable?`<button class="secondary" data-fiscal-file="${d.id}" data-type="pdf">Cupom PDF</button>`:''}`:''}</td></tr>`));
+  $('fiscal-documents').innerHTML=table(['Loja','Venda','Emissão / ambiente','Série / número','Situação','Retorno','Cupom'],documents.map(d=>`<tr><td>${safe(d.unitName)}</td><td>${safe(d.saleId)}</td><td>${safe(fiscalRoutingLabel(d))}</td><td>${safe(d.series||'—')} / ${safe(d.number||'Pendente')}</td><td>${safe(fiscalStatusLabels[d.status]||d.status)}</td><td>${safe(d.message||fiscalIssueMessage(d.issue))}</td><td>${fiscalFiles(d)}${d.canGenerate?`<button class="secondary" data-sale-detail="${safe(d.saleId)}">${me.role==='ADMINISTRADOR'?'Gerar cupom':'Detalhes'}</button>`:''}</td></tr>`));
   $('new-fiscal-issuer')?.addEventListener('click',()=>fiscalIssuerEditor());
   $('fiscal-issuers').onclick=async event=>{
     const toggle=event.target.closest('[data-fiscal-toggle]'),profile=event.target.closest('[data-fiscal-profile]');
@@ -23,14 +85,7 @@ async function loadFiscal() {
   };
   $('fiscal-documents').onclick=async event=>{
     const button=event.target.closest('[data-fiscal-file]');if(!button)return;
-    try {
-      const response=await fetch(`/api/admin/fiscal/documents/${button.dataset.fiscalFile}/${button.dataset.type}`,
-        {headers:{Authorization:`Bearer ${token}`}});
-      if(!response.ok)throw Error('Arquivo fiscal ainda indisponível.');
-      const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
-      link.href=url;link.download=`nfce-homologacao-${button.dataset.fiscalFile}.${button.dataset.type}`;
-      document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
-    } catch(error){flash(error.message,true);}
+    try {await fiscalDownload(button);} catch(error){flash(error.message,true);}
   };
 }
 

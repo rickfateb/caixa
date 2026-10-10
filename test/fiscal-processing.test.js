@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {processFiscalDocument} from '../src/fiscal-processing.js';
 import {fixture,now,fakeXml,authorizedResponse} from './fiscal-fixtures.js';
+import {canonicalJson,digest} from '../src/fiscal-core.js';
 
 function mocks(doc) {
   const calls=[];
@@ -54,4 +55,14 @@ test('changed snapshot or production environment cannot reach the native library
   doc.environment=1;
   await assert.rejects(()=>processFiscalDocument(db,doc,adapter,now),/HOMOLOGATION_ONLY/);
   assert.equal(calls.length,0);
+});
+test('manual homologation processes the current issue time and still rejects a stale prepared XML',async()=>{
+  const doc=fixture();
+  doc.snapshot.sale.issuedAt=new Date(now).toISOString();doc.snapshot.sale.occurredAt='2026-10-08T18:00:00.000Z';
+  doc.snapshot.routing={environment:2,source:'MANUAL'};doc.snapshot.automaticRouting={environment:0};
+  doc.snapshot_hash=digest(canonicalJson(doc.snapshot));
+  const {db,adapter}=mocks(doc);
+  assert.equal(await processFiscalDocument(db,doc,adapter,now),'AUTHORIZED');
+  doc.status='PENDING';
+  await assert.rejects(()=>processFiscalDocument(db,doc,adapter,now+300001),/OFFLINE_FISCAL_FLOW_REQUIRED/);
 });

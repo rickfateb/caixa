@@ -58,12 +58,13 @@ async function showSaleDetail(id){
     installments:table(['#','ID de origem','Pagamento','Vencimento','Valor','Pago','Status'],s.installments.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.external_id)}</td><td>${safe(p.external_payment_id)}</td><td>${p.due_date?new Date(p.due_date).toLocaleDateString('pt-BR',{timeZone:'UTC'}):'—'}</td><td>${p.amount_cents==null?'—':brl(p.amount_cents)}</td><td>${p.paid_cents==null?'—':brl(p.paid_cents)}</td><td>${safe(p.status)}</td></tr>`)),
     tef:table(['#','ID de origem','Pagamento','NSU','Autorização','Controle','Tipo','Status'],s.tef.map(p=>`<tr><td>${p.line_number}</td><td>${safe(p.external_id)}</td><td>${safe(p.external_payment_id)}</td><td>${safe(p.nsu)}</td><td>${safe(p.authorization_code)}</td><td>${safe(p.control_code)}</td><td>${safe(p.transaction_type)}</td><td>${p.simulated?'Simulado · ':''}${safe(p.status)}</td></tr>`))
   };
-  d.innerHTML=`<div class="heading"><div><h2>Venda ${safe(s.external_sale_id||s.client_sale_id)}</h2><p>${s.source==='SAURUS'?'Saurus':'Portal Caixa'} · ${safe(s.unit_name||'Unidade a vincular')} · Caixa ${safe(s.register_name||s.external_register_number||'—')} · ${new Date(s.occurred_at).toLocaleString('pt-BR')} · ${brl(s.total_cents)}</p></div><button class="secondary" data-close>Fechar</button></div><nav class="sale-tabs">${Object.entries(headings).map(([key,label])=>`<button data-sale-tab="${key}" class="${key==='items'?'selected':''}">${label} (${s[key].length})</button>`).join('')}</nav><div class="sale-detail-content">${sections.items}</div>`;
+  d.innerHTML=`<div class="heading"><div><h2>Venda ${safe(s.external_sale_id||s.client_sale_id)}</h2><p>${s.source==='SAURUS'?'Saurus':'Portal Caixa'} · ${safe(s.unit_name||'Unidade a vincular')} · Caixa ${safe(s.register_name||s.external_register_number||'—')} · ${new Date(s.occurred_at).toLocaleString('pt-BR')} · ${brl(s.total_cents)}</p></div><button class="secondary" data-close>Fechar</button></div><section class="sale-fiscal" data-sale-fiscal><h3>Cupom fiscal</h3><p>Carregando cupom…</p></section><nav class="sale-tabs">${Object.entries(headings).map(([key,label])=>`<button data-sale-tab="${key}" class="${key==='items'?'selected':''}">${label} (${s[key].length})</button>`).join('')}</nav><div class="sale-detail-content">${sections.items}</div>`;
   d.querySelector('[data-close]').onclick=()=>d.close();
   d.addEventListener('click',e=>{const key=e.target.closest('[data-sale-tab]')?.dataset.saleTab;if(!key)return;
     d.querySelectorAll('[data-sale-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.saleTab===key));
     d.querySelector('.sale-detail-content').innerHTML=sections[key];});
   d.addEventListener('close',()=>d.remove());document.body.append(d);d.showModal();
+  await loadSaleFiscal(d.querySelector('[data-sale-fiscal]'),id);
 }
 async function loadMappings(){
   const [rows,registers]=await Promise.all([api('/api/admin/saurus-mappings'),api('/api/admin/registers')]);

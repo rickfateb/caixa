@@ -1,6 +1,6 @@
 # NFC-e de mercadorias no Facinho: base de homologação
 
-Pesquisa e implementação preparatória em 09/10/2026. A prioridade é emitir o cupom das compras de mercadorias feitas nos PDVs. Este código permanece em **homologação, sem valor fiscal**; não houve emissão real, implantação ou alteração dos PDVs Android.
+Pesquisa e implementação preparatória em 09/10/2026. A prioridade é emitir o cupom das compras de mercadorias feitas nos PDVs. O portal foi publicado com controles de ambiente/agendas; o emissor permanece restrito a **homologação, sem valor fiscal**. Não houve autorização na SEFAZ nem alteração dos PDVs Android.
 
 ## Documento e estabelecimento
 
@@ -67,7 +67,13 @@ O perfil inicial é restrito a revenda interna SP, CRT 1, CFOP/CSOSN `5102/102` 
 
 ## Ambientes por maquininha/PDV e agendas
 
-Em **Fiscal > Ambientes e agendas**, o administrador pode escolher `Oficial`, `Homologação` ou `Padrão do serviço` para cada caixa. O padrão inicial do serviço é homologação. A escolha de Oficial fica registrada, mas não libera emissão real nesta versão: aparece como pendente, com `PRODUCTION_NOT_READY`, sem gerar cupom de teste como substituto.
+Em **Fiscal > Ambientes e agendas**, o administrador pode escolher `Oficial`, `Homologação`, `Desabilitado` ou `Padrão do serviço` para cada caixa. O padrão inicial do serviço é homologação; configurações anteriores são preservadas. Desabilitado também pode ser padrão do serviço ou destino de uma agenda. A escolha de Oficial fica registrada, mas não libera emissão real nesta versão: aparece como pendente, com `PRODUCTION_NOT_READY`, sem gerar cupom de teste como substituto.
+
+**Desabilitado** conserva a venda operacional, sem criar documento fiscal, enfileirar emissão ou reservar numeração. A venda permanece desabilitada em reenvios, reinícios e mudanças de agenda. Em **Vendas > Detalhes** aparece **Gerar cupom**; a mesma ação está disponível na listagem Fiscal. Somente um administrador pode solicitar a geração manual, escolhendo um ambiente real de emissão. Visualizar a venda, atualizar o estado ou consultar a prévia não gera notas.
+
+A geração manual é auditada e tem uma solicitação única por venda. Repetições consultam/reutilizam o mesmo documento e número. Ela mantém a decisão automática original separada da escolha manual. A opção Oficial permanece bloqueada, sem consumo de número nem fallback; a interface só habilita Homologação enquanto produção não estiver validada. Se faltar emitente ou classificação, a pendência aparece e exige outra ação manual após a correção: reenvio do PDV não prepara o documento. Um cupom autorizado passa a oferecer XML/PDF no lugar de Gerar cupom.
+
+Em homologação manual, a data/hora de emissão corresponde à preparação efetiva do cupom; o horário original da venda continua salvo. Não é uma emissão retroativa: a chave e `dhEmi` usam a data atual. O worker conserva a verificação de frescor do documento preparado, e as restrições de pagamento simulado, perfis de 2026 e produção continuam ativas.
 
 Uma agenda tem nome, ambiente, dias da semana, horário inicial/final ou `Dia todo`, datas de vigência opcionais e destinos (`Todos os PDVs` ou caixas selecionados). Pode ser desativada, editada ou removida. As alterações são preparadas na tela e passam a valer ao clicar em **Salvar ambientes e agendas**. A API audita a alteração, publica uma revisão de sincronização para os caixas e rejeita revisão antiga de outro administrador.
 
@@ -79,7 +85,7 @@ Exemplo: serviço em Oficial, agenda de homologação na sexta das 14:00 às 16:
 
 A prévia permite consultar a configuração salva em uma data/hora sem alterar o serviço. A decisão real é feita no primeiro recebimento/preparação da venda no servidor, com seu relógio; não depende do horário em que o worker transmitir. A decisão, revisão e origem da regra são gravadas por venda. Reenvios, reinícios e mudanças posteriores de configuração conservam esse ambiente. A migração preserva em homologação os documentos anteriores.
 
-A migração `011_fiscal_environments.sql` cria a política e as decisões das vendas, sem relaxar as restrições de homologação dos emitentes/documentos. Não há tarefa cron nem automação externa: cada nova venda e consulta calcula o ambiente pela agenda vigente.
+A migração `011_fiscal_environments.sql` cria a política e as decisões das vendas. `012_fiscal_disabled.sql` aceita o modo 0 nas decisões e cria `fiscal_manual_requests`; não muda configurações existentes nem relaxa as restrições de homologação dos emitentes/documentos. Não há tarefa cron nem automação externa: cada nova venda e consulta calcula o ambiente pela agenda vigente.
 
 | API | Finalidade |
 | --- | --- |
@@ -88,10 +94,12 @@ A migração `011_fiscal_environments.sql` cria a política e as decisões das v
 | `PUT /api/admin/fiscal/environments` | `{revision:"1",config:{defaultEnvironment:2,registerEnvironments:{"1":1},schedules:[]}}`; somente administrador, HTTP 409 em conflito de revisão. |
 | `GET /api/v1/fiscal/environment` | Ambiente atual apenas do PDV autenticado, regra e revisão; nenhuma credencial fiscal. |
 | `GET /api/v1/config` | Inclui `fiscal` com essa decisão atual e `productionEnabled:false`. |
+| `GET /api/admin/fiscal/sales/:id` | Consulta passiva do cupom; informa `canGenerate`, estado e arquivos disponíveis. |
+| `POST /api/admin/fiscal/sales/:id/prepare` | `{environment:2}` solicita geração manual de uma venda desabilitada; administrador e auditoria. Ambiente 1 retorna HTTP 409 `PRODUCTION_NOT_READY`. Corpo vazio não gera uma venda desabilitada. |
 
-Formato de uma agenda: `{id:"teste-a",name:"Teste Caixa A",enabled:true,environment:2,weekdays:[5],startTime:"14:00",endTime:"16:00",allDay:false,startsOn:null,endsOn:null,registerIds:["1"]}`. Ambiente 1 significa escolha de oficial; 2, homologação. Dias usam 0=domingo a 6=sábado. Lista de destinos vazia representa todos os caixas; a interface exige seleção explícita para a opção de caixas escolhidos.
+Formato de uma agenda: `{id:"teste-a",name:"Teste Caixa A",enabled:true,environment:2,weekdays:[5],startTime:"14:00",endTime:"16:00",allDay:false,startsOn:null,endsOn:null,registerIds:["1"]}`. Valores de configuração: **0 = Desabilitado**, **1 = Oficial**, **2 = Homologação**. O valor 0 é um modo do portal e nunca é enviado como `tpAmb` no XML. Dias usam 0=domingo a 6=sábado. Lista de destinos vazia representa todos os caixas; a interface exige seleção explícita para a opção de caixas escolhidos.
 
-Em resposta de venda, `requestedEnvironment` mostra a escolha persistida; `environment` refere-se ao documento preparado. Oficial pendente devolve `requestedEnvironment:1`, `environment:null`, `status:"BLOCKED"` e não consome numeração de homologação. A listagem Fiscal inclui também essas vendas bloqueadas, mesmo sem documento.
+Em resposta de venda, `automaticEnvironment` e `routing` conservam a escolha automática original; `requestedEnvironment` indica a escolha manual quando existe, e `environment` refere-se ao documento preparado. Desabilitado antes da solicitação devolve `requestedEnvironment:0`, `environment:null`, `status:"DISABLED"`, `issue:"AUTOMATIC_FISCAL_DISABLED"`, `automaticIssuanceEnabled:false` e `canGenerate:true`. `manualRequest` informa o ambiente e a data da solicitação, sem expor o usuário ao PDV. Oficial pendente devolve `requestedEnvironment:1`, `environment:null`, `status:"BLOCKED"` e não consome numeração de homologação. A listagem Fiscal inclui vendas desabilitadas/bloqueadas, mesmo sem documento.
 
 ## Contrato para o Android
 
@@ -99,7 +107,7 @@ Autenticação: `Authorization: Bearer <token-do-caixa>`, como nas APIs existent
 
 1. Gerar `clientSaleId` antes do envio e persistir o JSON original. Enviar a venda imediatamente após a confirmação operacional do pagamento. Em timeout HTTP, reenviar o mesmo JSON e o mesmo ID.
 2. O `POST /api/v1/sales` retorna, por exemplo, `{ "id":"123", "duplicate":false, "fiscal":{ "status":"PENDING", "environment":2, "hasFiscalValue":false } }`.
-3. Consultar `GET /api/v1/sales/:clientSaleId/fiscal` até estado final. Nesta etapa, consultas a cada dois segundos são adequadas ao piloto; ajustar carga e experiência após medir latência real.
+3. Consultar `GET /api/v1/sales/:clientSaleId/fiscal` até estado final de um documento solicitado. `DISABLED` é uma venda sem geração automática; não repetir a venda para forçar emissão nem aguardar autorização inexistente. A geração manual é uma ação administrativa no portal. Nesta etapa, consultas a cada dois segundos são adequadas ao piloto; ajustar carga e experiência após medir latência real.
 4. Quando `AUTHORIZED`, usar a chave/QR Code e baixar `GET /api/v1/sales/:clientSaleId/fiscal/pdf` ou `/xml`. O PDF pode ainda estar pendente de geração; retornar 404 não autoriza nova emissão.
 5. Manter os estados de venda/pagamento e documento fiscal separados. `duplicate:true` e HTTP 201 confirmam gravação da venda, não autorização de NFC-e. `hasFiscalValue` é sempre `false` nesta branch.
 6. Em `BLOCKED`, `REJECTED` ou `MANUAL`, exibir pendência de homologação e encaminhar para revisão; não inventar número/protocolo nem trocar o ID para tentar emitir novamente.
@@ -108,7 +116,7 @@ O Android não foi alterado: seus fontes não estão disponíveis nos repositór
 
 Para as agendas, consultar `GET /api/v1/fiscal/environment` no início da compra e novamente antes de concluir/enviar, além da sincronização de configuração. Mostrar de forma clara o modo de teste sem valor fiscal. A homologação é destinada a vendas de teste e não substitui o documento de uma compra real. A API atual só admite pagamentos simulados.
 
-O Android pode incluir `fiscalEnvironment:1` ou `2` no JSON original para informar o ambiente que apresentou ao operador/consumidor. Se ele diferir da decisão na primeira recepção, a venda fica fiscalmente bloqueada com `FISCAL_ENVIRONMENT_CHANGED`, sem numeração; não é encaminhada ao outro ambiente automaticamente. Sem a propriedade, permanece a compatibilidade com o app atual, com decisão pelo servidor. Depois da primeira recepção, uma consulta/repetição mostra a decisão original, mesmo se a agenda já mudou. `policyRevision` e `routing.selectedAt` permitem conferir qual configuração foi usada.
+O Android pode incluir `fiscalEnvironment:0`, `1` ou `2` no JSON original para informar o modo que apresentou ao operador/consumidor. Se ele diferir da decisão na primeira recepção, a venda fica fiscalmente bloqueada com `FISCAL_ENVIRONMENT_CHANGED`, sem numeração; não é encaminhada ao outro ambiente automaticamente. Sem a propriedade, permanece a compatibilidade com o app atual, com decisão pelo servidor. Depois da primeira recepção, uma consulta/repetição mostra a decisão original, mesmo se a agenda já mudou. `policyRevision` e `routing.selectedAt` permitem conferir qual configuração foi usada. Em modo 0, `automaticIssuanceEnabled:false` e `readiness:"DISABLED"` orientam a tela; não usar 0 como ambiente SEFAZ.
 
 ## Homologação e runtime
 
@@ -143,7 +151,7 @@ As rotas administrativas usam login Google e exigem administrador nas alteraçõ
 
 ## Verificado e limites para produção
 
-**54 testes automatizados passaram**, incluindo validação fiscal, centavos/descontos, quantidade fracionada e padding decimal do PostgreSQL, idempotência, rollback da numeração, hash JSONB, persistência antes do envio, consulta após timeout, recuperação de PDF e isolamento dos arquivos por caixa. Os testes de agendas cobrem fuso de Brasília, limites de janela, dias inteiros, viradas de dia/ano, vigências, prioridades, sobreposições, ambiente preservado nos reenvios, bloqueio de oficial sem fallback, permissões e conflitos de revisão. Também passaram `npm run check`, verificação sintática dos scripts fiscais e `git diff --check`.
+**66 testes automatizados passaram**, incluindo validação fiscal, centavos/descontos, quantidade fracionada e padding decimal do PostgreSQL, idempotência, rollback da numeração, hash JSONB, persistência antes do envio, consulta após timeout, recuperação de PDF e isolamento dos arquivos por caixa. Os testes de agendas cobrem fuso de Brasília, limites de janela, dias inteiros, viradas de dia/ano, vigências, prioridades, sobreposições, ambiente preservado nos reenvios, bloqueio de oficial sem fallback, permissões e conflitos de revisão. Desabilitado é testado em padrões/agendas, sem emissão/número automático, persistência após mudança de configuração, geração manual única, permissões/auditoria, rollback, pendências e data atual do XML/chave. Também passaram `npm run check`, verificação sintática dos scripts do portal e `git diff --check`.
 
 Os testes de banco usam PGlite/PostgreSQL em uma conexão. Eles não substituem teste concorrente com múltiplos processos contra o PostgreSQL de implantação. Os testes do emissor usam adaptador e XML sintéticos: **não validam a biblioteca nativa, o certificado, o CSC, o QR Code real, o DANFE real ou uma autorização efetiva na SEFAZ**. O pacote oficial foi instalado e sua importação foi verificada; nenhuma chamada fiscal nativa foi executada.
 
@@ -157,7 +165,7 @@ Antes de operação real, concluir:
 6. Entrega/ impressão de DANFE no Android e aceite do consumidor quando eletrônico; testes de latência, reinício, rejeição, duplicidade, falha de PDF e recuperação com o runtime real. [2]
 7. Uma autorização real em homologação e reconciliação do XML/protocolo/QR/DANFE antes de uma versão distinta permitir produção. Nesta branch, trocar uma variável de ambiente não libera ambiente 1: validações e restrições do banco o bloqueiam.
 
-O limite de cinco minutos para preparar/enviar uma venda normal é uma **proteção conservadora desta aplicação**, não uma afirmação de prazo legal geral da NFC-e. Vendas antigas ficam bloqueadas para análise, evitando que sincronização tardia vire emissão retroativa automática. O fluxo final precisa tratar conectividade no momento da compra e contingência fiscal.
+O limite de cinco minutos para preparar/enviar uma venda normal é uma **proteção conservadora desta aplicação**, não uma afirmação de prazo legal geral da NFC-e. Vendas antigas não viram emissão retroativa automática. A exceção de teste é uma solicitação manual para venda desabilitada, emitida com a data atual e preservando a data original separadamente; não libera esse procedimento em produção. O fluxo final precisa tratar conectividade no momento da compra e contingência fiscal.
 
 ## Fontes consultadas
 
