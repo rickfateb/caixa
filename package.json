@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "check": "node --check src/server.js"
+    "check": "node --check src/server.js",
+    "fiscal:worker": "node src/fiscal-worker.js",
+    "test": "node --test test/*.test.js test/*.test.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -16,5 +18,11 @@
     "multer": "^2.4.0",
     "pg": "^8.13.3",
     "sharp": "^0.34.5"
+  },
+  "optionalDependencies": {
+    "@projetoacbr/acbrlib-nfe-node": "1.0.11"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
   }
 }

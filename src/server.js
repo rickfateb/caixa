@@ -12,6 +12,9 @@ import { normalizeSaurusSale } from './saurus-import.js';
 import { installMediaRoutes } from './media.js';
 import { publishSyncRevision } from './sync.js';
 import { BANNER_POSITIONS, bannerDisplay, limitHomeBanners } from './home-banners.js';
+import { installFiscalRoutes } from './fiscal-routes.js';
+import { enqueueFiscal, fiscalForSale } from './fiscal-store.js';
+import { currentFiscalEnvironment } from './fiscal-environments.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { DATABASE_URL, GOOGLE_CLIENT_ID, ADMIN_EMAIL } = process.env;
@@ -55,6 +58,8 @@ async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/007_media_library.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/008_home_banners.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/009_center_banners.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/010_fiscal_homologation.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/011_fiscal_environments.sql'), 'utf8'));
   await pool.query("UPDATE media_jobs SET status='PENDING',started_at=NULL WHERE status='RUNNING'");
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);
@@ -66,6 +71,7 @@ app.use(express.json({ limit: '256kb' }));
 app.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 app.use(express.static(path.join(root, 'public'), { index: false }));
 installMediaRoutes(app, pool, requireGoogle, admin, audit);
+installFiscalRoutes(app, pool, {requireGoogle, admin, requireRegister, audit});
 app.get('/health', async (_req, res) => {
   try { await pool.query('SELECT 1'); res.json({ status: 'ok' }); }
   catch { res.status(503).json({ status: 'unavailable' }); }
@@ -701,6 +707,7 @@ app.get('/api/v1/config',requireRegister,async(req,res,next)=>{
     res.json({unit:rows[0],register:{id:req.register.id,name:req.register.name},
       appConfig:appSettings(rows[0].settings),
       bannerDisplay:bannerDisplay(bannerSettings),
+      fiscal:await currentFiscalEnvironment(pool,req.register.id),
       generatedAt:new Date().toISOString()});
   }catch(e){next(e);}
 });
@@ -769,9 +776,10 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
     if(!inserted.rows.length){
       const existing=await client.query('SELECT id,payload_hash FROM sales WHERE register_id=$1 AND client_sale_id=$2',
         [req.register.id,text(b.clientSaleId,100)]);
-      await client.query('COMMIT');
       if(existing.rows[0].payload_hash!==payloadHash) throw failure('SALE_ID_CONFLICT',409);
-      return res.json({id:existing.rows[0].id,duplicate:true});
+      const fiscal=await fiscalForSale(client,existing.rows[0].id);
+      await client.query('COMMIT');
+      return res.json({id:existing.rows[0].id,duplicate:true,fiscal});
     }
     const saleId=inserted.rows[0].id;
     for(let i=0;i<b.items.length;i++){
@@ -814,7 +822,8 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
           text(entry.clientTransactionId,80)||null,'SIMULATED',entry.transactionType,
           entry.occurredAt?new Date(entry.occurredAt).toISOString():occurredAt]);
     }
-    await client.query('COMMIT');res.status(201).json({id:saleId,duplicate:false});
+    const fiscal=await enqueueFiscal(client,saleId);
+    await client.query('COMMIT');res.status(201).json({id:saleId,duplicate:false,fiscal});
   }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e);}
   finally{client?.release();}
 });
