@@ -138,8 +138,7 @@ function fiscalIssuerEditor() {
       .map(([name,label])=>fiscalInput(name,label,['series','nextNumber'].includes(name)?'number':'text')).join('');
   fiscalDialog('Emitente NFC-e de teste em São Paulo',fields,data=>{
     const config=Object.fromEntries(data);delete config.unitId;
-    Object.assign(config,{uf:'SP',crt:1,environment:2,enabled:false,series:Number(config.series),nextNumber:Number(config.nextNumber),
-      credentialsRef:`PORTAL_${data.get('unitId')}`});
+    Object.assign(config,{uf:'SP',crt:1,environment:2,enabled:false,series:Number(config.series),nextNumber:Number(config.nextNumber)});
     return send('/api/admin/fiscal/issuers','POST',{unitId:data.get('unitId'),config});
   });
 }

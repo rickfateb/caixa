@@ -38,6 +38,35 @@ async function prepare(db,id,options) {
 }
 const disableAutomatic=db=>db.query('UPDATE fiscal_environment_policy SET config=$1',
   [JSON.stringify({...DEFAULT_FISCAL_POLICY,defaultEnvironment:0})]);
+test('issuer creation owns its certificate reference for current and old portal forms',async()=>{
+  const db=await database();let server;
+  try {
+    const app=express();app.use(express.json());
+    const auth=(req,_res,next)=>{req.user={email:'TEST'};next();};
+    const admin=(req,res,next)=>req.get('authorization')==='Bearer ADMIN'?next():res.status(403).end();
+    const pool={query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release:()=>{}})};
+    installFiscalRoutes(app,pool,{requireGoogle:auth,admin,requireRegister:auth,audit:async()=>{}});
+    app.use((error,_req,res,_next)=>res.status(error.status||500).json({error:error.message}));
+    server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+    const post=(unitId,config,authorized=true)=>fetch(`http://127.0.0.1:${server.address().port}/api/admin/fiscal/issuers`,
+      {method:'POST',headers:{Authorization:authorized?'Bearer ADMIN':'Bearer READER','Content-Type':'application/json'},
+        body:JSON.stringify({unitId,config})});
+    assert.equal((await post('2',issuer,false)).status,403);
+    assert.equal((await post('9223372036854775808',issuer)).status,422);
+    assert.equal((await post('2',{...issuer,environment:1})).status,422);
+    const original=(await db.query('SELECT config FROM fiscal_issuers WHERE unit_id=1')).rows[0].config;
+    for(const credentialsRef of [undefined,'facinho teste / certificado','OLD_REF']) {
+      const config={...issuer,series:2,enabled:false};delete config.credentialsRef;
+      if(credentialsRef!==undefined)config.credentialsRef=credentialsRef;
+      const response=await post('2',config);
+      assert.equal(response.status,201,JSON.stringify(await response.json()));
+      const saved=(await db.query('SELECT config,enabled FROM fiscal_issuers WHERE unit_id=2')).rows[0];
+      assert.equal(saved.config.credentialsRef,'PORTAL_2');assert.equal(saved.enabled,false);
+      await db.query('DELETE FROM fiscal_issuers WHERE unit_id=2');
+    }
+    assert.deepEqual((await db.query('SELECT config FROM fiscal_issuers WHERE unit_id=1')).rows[0].config,original);
+  } finally {if(server)await new Promise(resolve=>server.close(resolve));await db.close();}
+});
 test('Postgres migrations are idempotent and reject production or duplicate fiscal numbering',async()=>{
   const db=await database();
   try {

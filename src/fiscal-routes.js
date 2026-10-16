@@ -53,8 +53,11 @@ export function installFiscalRoutes(app,pool,{requireGoogle,admin,requireRegiste
       ORDER BY u.name`)).rows);
   }));
   app.post('/api/admin/fiscal/issuers',requireGoogle,admin,handler(async(req,res) => {
-    if (!id(req.body?.unitId)) throw fiscalError('INVALID_UNIT');
-    const config=validateIssuer(req.body.config);
+    if (!id(req.body?.unitId) || String(req.body.unitId).length>19 ||
+      BigInt(req.body.unitId)>9223372036854775807n) throw fiscalError('INVALID_UNIT');
+    // The portal owns this internal reference. Older open forms may still send
+    // a free-text value; never let that block the A1 upload flow.
+    const config=validateIssuer({...req.body.config,credentialsRef:`PORTAL_${req.body.unitId}`});
     const client=await pool.connect();
     try {
       await client.query('BEGIN');
