@@ -3,9 +3,12 @@ import {enqueueFiscal, fiscalForSale, publicFiscal} from './fiscal-store.js';
 import {currentFiscalEnvironment, FISCAL_TIME_ZONE, readFiscalPolicy, resolveFiscalEnvironment,
   validateFiscalPolicy} from './fiscal-environments.js';
 import {publishSyncRevision} from './sync.js';
+import multer from 'multer';
+import {encryptFiscalSecret,fiscalSecretsKey,validateFiscalUpload} from './fiscal-credentials.js';
 
 const id = value => /^[1-9]\d*$/.test(String(value));
 const handler = fn => (req,res,next) => Promise.resolve(fn(req,res)).catch(next);
+const credentialUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:1024*1024,files:1,fields:3}});
 
 export function installFiscalRoutes(app,pool,{requireGoogle,admin,requireRegister,audit}) {
   app.get('/api/admin/fiscal/environments',requireGoogle,handler(async(req,res) => {
@@ -43,7 +46,10 @@ export function installFiscalRoutes(app,pool,{requireGoogle,admin,requireRegiste
   }));
   app.get('/api/admin/fiscal/issuers',requireGoogle,handler(async(_req,res) => {
     res.json((await pool.query(`SELECT f.id,f.unit_id,u.name AS unit_name,f.cnpj,f.series,f.next_number,
-      f.enabled,f.config,f.reviewed_by,f.updated_at FROM fiscal_issuers f JOIN units u ON u.id=f.unit_id
+      f.enabled,f.config,f.reviewed_by,f.updated_at,
+      (c.issuer_id IS NOT NULL) AS certificate_uploaded,c.updated_at AS certificate_updated_at
+      FROM fiscal_issuers f JOIN units u ON u.id=f.unit_id
+      LEFT JOIN fiscal_credentials c ON c.issuer_id=f.id
       ORDER BY u.name`)).rows);
   }));
   app.post('/api/admin/fiscal/issuers',requireGoogle,admin,handler(async(req,res) => {
@@ -72,6 +78,35 @@ export function installFiscalRoutes(app,pool,{requireGoogle,admin,requireRegiste
       await audit(client,req.user.email,'FISCAL_ISSUER_ENABLED','fiscal_issuers',row.id,{enabled:req.body.enabled});
       await client.query('COMMIT');res.json(row);
     } catch(error) {await client.query('ROLLBACK');throw error;} finally {client.release();}
+  }));
+  app.post('/api/admin/fiscal/issuers/:id/credentials',requireGoogle,admin,
+    credentialUpload.single('file'),handler(async(req,res) => {
+    if(!id(req.params.id)||Object.keys(req.body||{}).some(key=>!['password','csc','cscId'].includes(key)))
+      throw fiscalError('INVALID_CERTIFICATE_UPLOAD');
+    const key=fiscalSecretsKey();
+    const value=validateFiscalUpload(req.file,req.body);
+    const client=await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const issuer=(await client.query('SELECT id FROM fiscal_issuers WHERE id=$1 FOR UPDATE',
+        [req.params.id])).rows[0];
+      if(!issuer)throw fiscalError('ISSUER_NOT_FOUND',404);
+      const encrypted=[encryptFiscalSecret(value.pfx,key,issuer.id,'pfx'),
+        encryptFiscalSecret(value.password,key,issuer.id,'password'),
+        encryptFiscalSecret(value.csc,key,issuer.id,'csc')];
+      await client.query(`INSERT INTO fiscal_credentials(issuer_id,encrypted_pfx,encrypted_password,
+        encrypted_csc,csc_id,pfx_sha256,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7)
+        ON CONFLICT(issuer_id) DO UPDATE SET encrypted_pfx=excluded.encrypted_pfx,
+        encrypted_password=excluded.encrypted_password,encrypted_csc=excluded.encrypted_csc,
+        csc_id=excluded.csc_id,pfx_sha256=excluded.pfx_sha256,
+        updated_by=excluded.updated_by,updated_at=now()`,
+        [issuer.id,...encrypted,value.cscId,value.sha256,req.user.email]);
+      await audit(client,req.user.email,'FISCAL_CREDENTIALS_UPLOADED','fiscal_issuers',issuer.id,
+        {environment:2,pfxSha256:value.sha256});
+      await client.query('COMMIT');
+      res.json({uploaded:true,sha256:value.sha256});
+    } catch(error) {await client.query('ROLLBACK');throw error;}
+    finally {client.release();value.pfx.fill(0);}
   }));
   app.put('/api/admin/fiscal/issuers/:id/products/:productId',requireGoogle,admin,handler(async(req,res) => {
     if (!id(req.params.id) || !id(req.params.productId)) throw fiscalError('INVALID_ID');

@@ -61,6 +61,7 @@ async function initialize() {
   await pool.query(readFileSync(path.join(root, 'sql/010_fiscal_homologation.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/011_fiscal_environments.sql'), 'utf8'));
   await pool.query(readFileSync(path.join(root, 'sql/012_fiscal_disabled.sql'), 'utf8'));
+  await pool.query(readFileSync(path.join(root, 'sql/013_fiscal_credentials.sql'), 'utf8'));
   await pool.query("UPDATE media_jobs SET status='PENDING',started_at=NULL WHERE status='RUNNING'");
   await pool.query(`INSERT INTO users(email,name,role) VALUES($1,$2,'ADMINISTRADOR')
     ON CONFLICT(email) DO NOTHING`, [ADMIN_EMAIL.trim().toLowerCase(), 'Administrador']);
@@ -831,7 +832,7 @@ app.post('/api/v1/sales',requireRegister,async(req,res,next)=>{
 
 app.get('/',(_req,res)=>res.sendFile(path.join(root,'public/index.html')));
 app.use((err,_req,res,_next)=>{
-  if(err.code==='LIMIT_FILE_SIZE') return res.status(413).json({error:'IMAGE_TOO_LARGE'});
+  if(err.code==='LIMIT_FILE_SIZE') return res.status(413).json({error:'FILE_TOO_LARGE'});
   if(err.code==='LIMIT_UNEXPECTED_FILE') return res.status(400).json({error:'INVALID_IMAGE_UPLOAD'});
   if(err.type==='entity.too.large') return res.status(413).json({error:'PAYLOAD_TOO_LARGE'});
   if(err instanceof SyntaxError && 'body' in err) return res.status(400).json({error:'INVALID_JSON'});

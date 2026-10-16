@@ -73,14 +73,16 @@ async function loadFiscal() {
     api('/api/admin/fiscal/environments')]);
   fiscalEnvironmentState=policy;fiscalPolicyDirty=false;renderFiscalEnvironments();
   $('fiscal-issuers').innerHTML=`<h3>Emitentes por loja</h3>${me.role==='ADMINISTRADOR'?'<button id="new-fiscal-issuer">Cadastrar emitente de teste</button>':''}` +
-    table(['Loja','CNPJ','Série','Próximo número','Situação',''],issuers.map(i=>`<tr><td>${safe(i.unit_name)}</td><td>${safe(i.cnpj)}</td><td>${i.series}</td><td>${i.next_number}</td><td>${i.enabled?'Ativo em homologação':'Desativado'}</td><td>${me.role==='ADMINISTRADOR'?`<button data-fiscal-profile="${i.id}" class="secondary">Classificar produto</button> <button data-fiscal-toggle="${i.id}" data-enabled="${!i.enabled}" class="secondary">${i.enabled?'Desativar':'Ativar testes'}</button>`:''}</td></tr>`));
+    table(['Loja','CNPJ','Série','Próximo número','Situação','Certificado A1',''],issuers.map(i=>`<tr><td>${safe(i.unit_name)}</td><td>${safe(i.cnpj)}</td><td>${i.series}</td><td>${i.next_number}</td><td>${i.enabled?'Ativo em homologação':'Desativado'}</td><td>${i.certificate_uploaded?'Enviado':'Pendente'}</td><td>${me.role==='ADMINISTRADOR'?`<button data-fiscal-credentials="${i.id}" class="secondary">${i.certificate_uploaded?'Substituir A1 / CSC':'Enviar A1 / CSC'}</button> <button data-fiscal-profile="${i.id}" class="secondary">Classificar produto</button> <button data-fiscal-toggle="${i.id}" data-enabled="${!i.enabled}" class="secondary">${i.enabled?'Desativar':'Ativar testes'}</button>`:''}</td></tr>`));
   $('fiscal-documents').innerHTML=table(['Loja','Venda','Emissão / ambiente','Série / número','Situação','Retorno','Cupom'],documents.map(d=>`<tr><td>${safe(d.unitName)}</td><td>${safe(d.saleId)}</td><td>${safe(fiscalRoutingLabel(d))}</td><td>${safe(d.series||'—')} / ${safe(d.number||'Pendente')}</td><td>${safe(fiscalStatusLabels[d.status]||d.status)}</td><td>${safe(d.message||fiscalIssueMessage(d.issue))}</td><td>${fiscalFiles(d)}${d.canGenerate?`<button class="secondary" data-sale-detail="${safe(d.saleId)}">${me.role==='ADMINISTRADOR'?'Gerar cupom':'Detalhes'}</button>`:''}</td></tr>`));
   $('new-fiscal-issuer')?.addEventListener('click',()=>fiscalIssuerEditor());
   $('fiscal-issuers').onclick=async event=>{
-    const toggle=event.target.closest('[data-fiscal-toggle]'),profile=event.target.closest('[data-fiscal-profile]');
+    const toggle=event.target.closest('[data-fiscal-toggle]'),profile=event.target.closest('[data-fiscal-profile]'),
+      credentials=event.target.closest('[data-fiscal-credentials]');
     try {
       if(toggle){await send(`/api/admin/fiscal/issuers/${toggle.dataset.fiscalToggle}`,'PATCH',{enabled:toggle.dataset.enabled==='true'});await loadFiscal();}
       if(profile) await fiscalProfileEditor(profile.dataset.fiscalProfile);
+      if(credentials) fiscalCredentialsEditor(credentials.dataset.fiscalCredentials);
     } catch(error){flash(error.message,true);}
   };
   $('fiscal-documents').onclick=async event=>{
@@ -104,16 +106,40 @@ function fiscalDialog(title,fields,onSave,{afterSave,submitLabel='Salvar'}={}) {
   dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();
 }
 const fiscalInput=(name,label,type='text')=>`<label>${safe(label)}<input name="${name}" type="${type}" required></label>`;
+function fiscalCredentialsEditor(issuerId) {
+  const dialog=document.createElement('dialog');dialog.className='fiscal-dialog';
+  dialog.innerHTML=`<h2>Certificado A1 e CSC de homologação</h2><p>Escolha o arquivo A1 da empresa. A senha e o CSC não serão mostrados depois do envio.</p>
+    <form autocomplete="off"><div class="grid"><label>Certificado A1 (.pfx ou .p12)<input name="file" type="file" accept=".pfx,.p12" required></label>
+    <label>Senha do certificado<input name="password" type="password" autocomplete="new-password" required></label>
+    <label>CSC de homologação<input name="csc" type="password" autocomplete="new-password" minlength="16" maxlength="36" required></label>
+    <label>ID do CSC (6 dígitos)<input name="cscId" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label></div>
+    <p data-error class="error" role="alert"></p><menu><button type="button" class="secondary" data-close>Cancelar</button>
+    <button type="submit">Guardar credenciais</button></menu></form>`;
+  dialog.querySelector('[data-close]').onclick=()=>dialog.close();
+  dialog.querySelector('form').onsubmit=async event=>{
+    event.preventDefault();const form=event.target,button=form.querySelector('[type="submit"]');button.disabled=true;
+    try {
+      const file=form.elements.file.files[0];if(!file||file.size>1024*1024)throw Error('O A1 deve ter até 1 MB.');
+      const response=await fetch(`/api/admin/fiscal/issuers/${issuerId}/credentials`,
+        {method:'POST',headers:{Authorization:`Bearer ${token}`},body:new FormData(form)});
+      const result=await response.json();if(!response.ok)throw Error(result.error||'Falha no envio do certificado.');
+      dialog.close();await loadFiscal();flash('Credenciais de homologação guardadas. O envio não emitiu uma nota.');
+    } catch(error){dialog.querySelector('[data-error]').textContent=fiscalIssueMessage(error.message);}
+    finally {form.elements.password.value='';form.elements.csc.value='';button.disabled=false;}
+  };
+  dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();
+}
 function fiscalIssuerEditor() {
   const fields=`<label>Loja<select name="unitId" required>${units.filter(u=>u.active).map(u=>`<option value="${u.id}">${safe(u.name)}</option>`).join('')}</select></label>` +
     [['cnpj','CNPJ (somente números)'],['ie','Inscrição estadual'],['name','Razão social'],['tradeName','Nome fantasia'],
       ['street','Logradouro'],['number','Número'],['district','Bairro'],['city','Município'],['cityCode','Código IBGE do município'],
       ['zipCode','CEP (somente números)'],['series','Série de teste'],['nextNumber','Próximo número de teste'],
-      ['credentialsRef','Identificador da configuração do certificado'],['establishmentEvidence','Referência da conferência do estabelecimento']]
+      ['establishmentEvidence','Referência da conferência do estabelecimento']]
       .map(([name,label])=>fiscalInput(name,label,['series','nextNumber'].includes(name)?'number':'text')).join('');
   fiscalDialog('Emitente NFC-e de teste em São Paulo',fields,data=>{
     const config=Object.fromEntries(data);delete config.unitId;
-    Object.assign(config,{uf:'SP',crt:1,environment:2,enabled:false,series:Number(config.series),nextNumber:Number(config.nextNumber)});
+    Object.assign(config,{uf:'SP',crt:1,environment:2,enabled:false,series:Number(config.series),nextNumber:Number(config.nextNumber),
+      credentialsRef:`PORTAL_${data.get('unitId')}`});
     return send('/api/admin/fiscal/issuers','POST',{unitId:data.get('unitId'),config});
   });
 }

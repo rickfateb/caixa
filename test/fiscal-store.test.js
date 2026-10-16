@@ -11,7 +11,7 @@ import {canonicalJson,digest} from '../src/fiscal-core.js';
 
 async function database() {
   const db=new PGlite();
-  for (const path of ['001_initial','002_promotions','003_units','004_sales_saurus','005_media_pos','006_sync_dispatch','010_fiscal_homologation','011_fiscal_environments','012_fiscal_disabled'])
+  for (const path of ['001_initial','002_promotions','003_units','004_sales_saurus','005_media_pos','006_sync_dispatch','010_fiscal_homologation','011_fiscal_environments','012_fiscal_disabled','013_fiscal_credentials'])
     await db.exec(readFileSync(new URL(`../sql/${path}.sql`,import.meta.url),'utf8'));
   await db.exec(`INSERT INTO units(name,acronym) VALUES('LOJA TESTE','T1'),('OUTRA LOJA','T2');
     INSERT INTO products(description,ncm) VALUES('TESTE','19021900');
@@ -44,6 +44,7 @@ test('Postgres migrations are idempotent and reject production or duplicate fisc
     await db.exec(readFileSync(new URL('../sql/010_fiscal_homologation.sql',import.meta.url),'utf8'));
     await db.exec(readFileSync(new URL('../sql/011_fiscal_environments.sql',import.meta.url),'utf8'));
     await db.exec(readFileSync(new URL('../sql/012_fiscal_disabled.sql',import.meta.url),'utf8'));
+    await db.exec(readFileSync(new URL('../sql/013_fiscal_credentials.sql',import.meta.url),'utf8'));
     await assert.rejects(()=>db.query(`INSERT INTO fiscal_issuers(unit_id,cnpj,environment,series,next_number,config,reviewed_by)
       VALUES(2,$1,1,1,1,'{}','TEST')`,[issuer.cnpj]),error=>error.code==='23514');
     await assert.rejects(()=>db.query(`INSERT INTO fiscal_issuers(unit_id,cnpj,series,next_number,config,reviewed_by)

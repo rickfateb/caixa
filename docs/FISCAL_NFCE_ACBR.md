@@ -140,10 +140,13 @@ Requisitos do worker:
 | `ACBR_NFE_LIBRARY_PATH` | Biblioteca nativa oficial de NFe/NFCe, compatível com OS/arquitetura e DANFE sem interface gráfica. |
 | `ACBR_NFE_SCHEMAS_PATH` | Schemas correspondentes à versão nativa e ao ambiente da SEFAZ. |
 | `FISCAL_ACBR_CRYPT_KEY` | Chave privada de proteção da configuração ACBr. |
-| `FISCAL_<REF>_PFX_PATH`, `_PFX_PASSWORD` | Arquivo A1 e senha do emitente habilitado. |
-| `FISCAL_<REF>_CSC`, `_CSC_ID` | CSC de homologação e identificador com seis dígitos. `<REF>` é `credentialsRef` do emitente. |
+| `FISCAL_SECRETS_KEY` | Chave base64 de 32 bytes, idêntica no portal e no worker, para credenciais enviadas na aba Fiscal. Guardar fora do Git e do banco. |
+| `FISCAL_<REF>_PFX_PATH`, `_PFX_PASSWORD` | Alternativa legada quando não há A1 enviado pelo portal: arquivo e senha do emitente. |
+| `FISCAL_<REF>_CSC`, `_CSC_ID` | Alternativa legada: CSC de homologação e identificador com seis dígitos. `<REF>` é `credentialsRef` do emitente. |
 
-Biblioteca, schemas e A1 devem existir no filesystem do worker. O código usa o wrapper oficial em `dist/src`, resposta INI UTF-8, SSL, ambiente 2 e NFC-e 4.00. A1 não deve ficar em volume efêmero sem recuperação; o armazenamento fiscal precisa de backup, controle de acesso e retenção conforme a legislação. [2][11]
+O administrador pode enviar um A1 `.pfx`/`.p12` de até 1 MB, a senha e o CSC de homologação em **Fiscal > Emitentes por loja > Enviar A1 / CSC**. O upload valida a senha por OpenSSL via Node, cifra os bytes e os dois segredos com AES-256-GCM e guarda apenas o conteúdo cifrado no banco. O worker decifra no momento do processamento e cria um arquivo temporário privado, preferencialmente em `/dev/shm`, que remove em seguida. A chave `FISCAL_SECRETS_KEY` precisa estar configurada no portal e no worker; sem ela, o upload é recusado. A troca da chave requer recifrar as credenciais antes da mudança. O backup do banco e da chave deve ser protegido separadamente. O portal não exibe nem permite baixar o certificado ou os segredos depois do envio.
+
+Biblioteca nativa e schemas devem existir no filesystem do worker. O código usa o wrapper oficial em `dist/src`, resposta INI UTF-8, SSL, ambiente 2 e NFC-e 4.00. O envio do A1 não instala esses componentes e não produz NFC-e automaticamente. O armazenamento fiscal precisa de backup, controle de acesso e retenção conforme a legislação. [2][11]
 
 Cadastrar o emitente na aba Fiscal usando dados oficiais conferidos, referência da evidência cadastral e uma série de homologação revisada. Cadastrar os produtos usados no piloto com NCM, origem, CFOP, CSOSN, PIS/Cofins, GTIN ou ausência real de GTIN, CEST quando aplicável e informação de tributos aproximados com fonte/versão. Habilitar o emitente de teste depois dessa revisão.
 

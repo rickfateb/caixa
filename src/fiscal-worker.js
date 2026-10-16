@@ -2,6 +2,7 @@
 import pg from 'pg';
 import {createAcbrAdapter} from './fiscal-acbr.js';
 import {processFiscalDocument} from './fiscal-processing.js';
+import {runtimeCredentials} from './fiscal-credentials.js';
 import {setTimeout as delay} from 'node:timers/promises';
 
 process.env.TZ='America/Sao_Paulo';
@@ -23,10 +24,11 @@ try {
       (d.status IN ('PENDING','SIGNED','SUBMITTING','UNKNOWN') OR (d.status='AUTHORIZED' AND d.danfe_pdf IS NULL))
       ORDER BY d.id LIMIT 1`)).rows[0];
     if (!document) {await delay(2000);continue;}
-    let adapter;
+    let adapter,credentials;
     try {
       if (document.attempts>=12) throw Error('FISCAL_RECONCILIATION_REQUIRED');
-      adapter=createAcbrAdapter(document.snapshot.issuer);
+      credentials=await runtimeCredentials(client,{...document.snapshot.issuer,id:document.issuer_id});
+      adapter=createAcbrAdapter(document.snapshot.issuer,credentials.env);
       await processFiscalDocument(client,document,adapter);
     } catch(error) {
       const code=/^[A-Z][A-Z0-9_]+$/.test(error.message)?error.message:'ACBR_RUNTIME_FAILURE';
@@ -34,7 +36,7 @@ try {
       await client.query(`UPDATE fiscal_documents SET status=CASE WHEN status='AUTHORIZED' THEN status ELSE 'MANUAL' END,
         last_error=$2,retry_at=now()+interval '1 minute',updated_at=now() WHERE id=$1`,[document.id,code]);
       console.warn('FISCAL_DOCUMENT_REQUIRES_REVIEW',{documentId:document.id,code});
-    } finally {try {adapter?.close();} catch {}}
+    } finally {try {adapter?.close();} catch {} try {credentials?.cleanup();} catch {}}
   }
 } catch(error) {
   console.error('FISCAL_WORKER_STOPPED',/^[A-Z_]+$/.test(error.message)?error.message:'CHECK_RUNTIME_CONFIGURATION');

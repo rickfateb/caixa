@@ -121,7 +121,9 @@ Base de emissão centralizada com ACBr para NFC-e modelo 65/SP, em **homologaç�
 
 Em **Fiscal > Ambientes e agendas**, escolha **Oficial**, **Homologação** ou **Desabilitado** por maquininha/PDV e programe dias, horários, vigência ou dia inteiro para todos ou alguns caixas. Desabilitado recebe as vendas sem gerar documentos ou reservar numeração. Em **Vendas > Detalhes**, o administrador pode clicar em **Gerar cupom** e escolher o ambiente; a ação também aparece na aba Fiscal. Reenvios e mudanças de agenda conservam a decisão original da venda e não disparam emissão posterior automática. As agendas usam Brasília; a prévia por data/hora não altera a emissão. Oficial continua pendente de validação, inclusive na geração manual, sem fallback para homologação.
 
-Veja [escopo, requisitos, contrato Android, pesquisa tributária e limites para produção](docs/FISCAL_NFCE_ACBR.md). O portal está publicado; não houve autorização na SEFAZ. O runtime nativo, A1, CSC, cadastros oficiais e os testes integrados ainda precisam ser fornecidos/validados; o código bloqueia produção e emissão com regras de 2027.
+Em **Fiscal > Emitentes por loja**, o administrador cadastra o emitente e usa **Enviar A1 / CSC** para guardar o arquivo `.pfx` ou `.p12`, sua senha e o CSC de homologação. O portal verifica a senha, cifra os três segredos antes de armazená-los no PostgreSQL e não os devolve pela API. Configure `FISCAL_SECRETS_KEY` (32 bytes em base64) fora do Git no portal e no worker; sem ela o envio fica bloqueado. O worker pode usar as credenciais cifradas ou as variáveis de ambiente antigas.
+
+Veja [escopo, requisitos, contrato Android, pesquisa tributária e limites para produção](docs/FISCAL_NFCE_ACBR.md). O envio do A1 não emite documento. É preciso configurar o worker, a biblioteca nativa ACBr e os schemas, cadastrar o emitente com dados oficiais e revisar os perfis fiscais dos produtos antes de tentar a NFC-e em homologação. O código bloqueia produção e emissão com regras de 2027.
 
 ## Segurança e limites desta etapa
 
